@@ -8,7 +8,8 @@ from ..models.data_models import (
 from app.document_parser.universal_parser import UniversalDocumentParser
 from app.citation_parser.citation_extractor import CitationExtractor
 from app.bibliography.checker import BibliographyChecker
-
+import requests
+import json
 
 class SimpleAnalysisService:
     def __init__(self):

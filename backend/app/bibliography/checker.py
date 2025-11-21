@@ -7,7 +7,7 @@ from urllib.parse import quote
 import json
 from app.search.online_searcher import OnlineSearcher, SearchResult
 from app.config import APIConfig
-
+from app.search.russian_sources import RussianSourcesSearcher
 
 class BibliographyChecker:
     def __init__(self):
@@ -18,7 +18,6 @@ class BibliographyChecker:
         ]
         self.section_end_keywords = ['приложение', 'appendix', 'заключение', 'conclusion']
 
-        # API ключи и endpoints (можно вынести в конфиг)
         self.search_apis = {
             'google_books': 'https://www.googleapis.com/books/v1/volumes',
             'crossref': 'https://api.crossref.org/works',
@@ -26,9 +25,10 @@ class BibliographyChecker:
             'semantic_scholar': 'https://api.semanticscholar.org/graph/v1/paper/search'
         }
         self.searcher = OnlineSearcher(APIConfig())
+        self.russian_searcher = RussianSourcesSearcher()
 
     def find_bibliography_section(self, text_blocks: List[TextBlock]) -> List[TextBlock]:
-        print("📚 Поиск реального раздела библиографии...")
+        print("Поиск реального раздела библиографии...")
         bibliography_blocks = []
         in_bibliography = False
         found_header = False
@@ -69,7 +69,7 @@ class BibliographyChecker:
 
     def enhance_with_online_search(self, bibliography_entries: List[BibliographyEntry]) -> List[BibliographyEntry]:
         """Улучшает библиографические записи с помощью онлайн-поиска"""
-        print("🔍 Улучшаем библиографические записи онлайн-поиском...")
+        print("Улучшаем библиографические записи онлайн-поиском...")
 
         enhanced_entries = []
 
@@ -81,24 +81,34 @@ class BibliographyChecker:
             entry.search_queries = search_queries
 
             best_result = None
-            for query in search_queries:
-                print(f"      🔎 Поиск: '{query}'")
-                results = self.searcher.search_publication(query)
 
-                if results:
-                    # Фильтруем и выбираем лучший результат
-                    relevant_results = [r for r in results if self._is_relevant_result(r, entry.text)]
-                    if relevant_results:
-                        best_result = self._filter_best_result(relevant_results, entry.text)
-                        if best_result:
-                            print(f"      ✅ Релевантный результат (уверенность: {best_result.confidence:.2f})")
-                            break
+            # сначала российские источники
+            russian_result = self.russian_searcher.search_publication(
+                search_queries[0] if search_queries else entry.text,
+                entry.text
+            )
+
+            if russian_result:
+                best_result = self._convert_russian_result_to_search_result(russian_result)
+                print(f"      Найден в российских источниках (уверенность: {best_result.confidence:.2f})")
+            else:
+                # если не рос то междунар
+                for query in search_queries:
+                    print(f"      Международный поиск: '{query}'")
+                    results = self.searcher.search_publication(query)
+
+                    if results:
+                        # Фильтруем и выбираем лучший результат
+                        relevant_results = [r for r in results if self._is_relevant_result(r, entry.text)]
+                        if relevant_results:
+                            best_result = self._filter_best_result(relevant_results, entry.text)
+                            if best_result:
+                                print(f"      Релевантный результат (уверенность: {best_result.confidence:.2f})")
+                                break
                         else:
-                            print(f"      ⚠ Найдены результаты, но не релевантные")
+                            print(f"      Найдены результаты, но не релевантные")
                     else:
-                        print(f"      ⚠ Найдены результаты, но не релевантные")
-                else:
-                    print(f"      ❌ Результатов нет")
+                        print(f"      Результатов нет")
 
             if best_result:
                 # Преобразуем SearchResult в словарь для online_metadata
@@ -116,21 +126,43 @@ class BibliographyChecker:
                     'isbn': best_result.isbn,
                     'url': best_result.url,
                     'confidence': best_result.confidence,
-                    'retrieved_at': time.time()
+                    'retrieved_at': time.time(),
+                    #'description': getattr(best_result, 'description', '')
                 }
                 entry.enhancement_confidence = best_result.confidence
                 entry.is_verified = True
-                print(f"      🎯 Используем релевантный результат с уверенностью: {best_result.confidence:.2f}")
+                print(f"      Используем результат с уверенностью: {best_result.confidence:.2f}")
             else:
                 # Убедимся, что online_metadata это пустой словарь, а не None
                 entry.online_metadata = {}
-                print(f"      ❌ Подходящий результат не найден")
+                print(f"      Подходящий результат не найден")
 
             enhanced_entries.append(entry)
 
         print(
-            f"✅ Улучшено {len([e for e in enhanced_entries if e.online_metadata])} из {len(enhanced_entries)} записей")
+            f"Улучшено {len([e for e in enhanced_entries if e.online_metadata])} из {len(enhanced_entries)} записей")
         return enhanced_entries
+
+    def _convert_russian_result_to_search_result(self, russian_result: Dict[str, Any]) -> SearchResult:
+        """Конвертирует результат из российских источников в SearchResult"""
+        url = russian_result.get('record_url') or russian_result.get('url')
+
+        return SearchResult(
+            source=russian_result['source'],
+            title=russian_result.get('title', ''),
+            authors=russian_result.get('authors', []),
+            year=russian_result.get('year'),
+            publisher=russian_result.get('publisher'),
+            journal=russian_result.get('journal'),
+            volume=None,
+            issue=None,
+            pages=None,
+            doi=None,
+            isbn=None,
+            url=url,
+            confidence=russian_result.get('confidence', 0.6),
+            is_search_link=russian_result.get('is_search_link', False)
+        )
 
     def _enhance_single_entry(self, entry: BibliographyEntry) -> BibliographyEntry:
         """Улучшает одну библиографическую запись"""
@@ -141,36 +173,34 @@ class BibliographyChecker:
         best_confidence = 0.0
 
         for query in search_queries:
-            print(f"      🔎 Поиск: '{query}'")
+            print(f"      Поиск: '{query}'")
             try:
                 results = self.online_searcher.search_publication(query)
 
                 if results:
-                    # Используем улучшенную фильтрацию
                     best_result = self._filter_best_result(results, query)
 
                     if best_result and best_result.confidence > best_confidence:
                         best_overall_result = best_result
                         best_confidence = best_result.confidence
-                        print(f"      ✅ Найден результат (уверенность: {best_result.confidence:.2f})")
+                        print(f"      Найден результат (уверенность: {best_result.confidence:.2f})")
 
-                        # Если уверенность очень высокая, можно остановиться
                         if best_result.confidence > 0.8:
                             break
                 else:
-                    print(f"      ❌ Не найдено результатов для: {query}")
+                    print(f"      Не найдено результатов для: {query}")
 
             except Exception as e:
-                print(f"      ⚠ Ошибка при поиске '{query}': {e}")
+                print(f"      Ошибка при поиске '{query}': {e}")
                 continue
 
         if best_overall_result and best_confidence > 0.3:
             entry.online_metadata = self._format_online_metadata(best_overall_result)
             entry.is_verified = True
             entry.enhancement_confidence = best_confidence
-            print(f"      🎯 Используем результат с уверенностью: {best_confidence:.2f}")
+            print(f"      Используем результат с уверенностью: {best_confidence:.2f}")
         else:
-            print(f"      ⚠ Не найдено достаточно качественных результатов")
+            print(f"      Не найдено достаточно качественных результатов")
 
         return entry
 
@@ -205,7 +235,7 @@ class BibliographyChecker:
         if clean_text.strip():
             queries.append(clean_text.strip())
 
-        # 2. Упрощенный запрос (без технических деталей)
+        # 2. Упрощенный запрос
         simple_text = re.sub(
             r'\b(изд-во|издательство|учебник|пособие|монография|статья|под ред|ред\.|с\.|стр\.|т\.|вып\.)\b.*?[.,]', '',
             clean_text, flags=re.IGNORECASE)
@@ -219,7 +249,7 @@ class BibliographyChecker:
         if authors and title:
             queries.append(f"{authors} {title}")
 
-        # 4. Запрос только с названием (улучшенное извлечение)
+        # 4. Запрос только с названием
         improved_title = self._extract_improved_title(clean_text)
         if improved_title:
             queries.append(improved_title)
@@ -479,7 +509,7 @@ class BibliographyChecker:
         original_lower = original_text.lower()
         result_title = result.title.lower() if result.title else ""
 
-        # Ключевые слова из оригинальной записи
+        # Ключевые слова из оригинальной записи тест
         key_phrases = [
             'толстой', 'война и мир',  # Для Толстого
             'экономик', 'анализ данных',  # Для экономики
@@ -524,32 +554,32 @@ class BibliographyChecker:
                             if result.confidence > best_confidence:
                                 best_relevant_result = result
                                 best_confidence = result.confidence
-                                print(f"      ✅ Релевантный результат (уверенность: {result.confidence:.2f})")
+                                print(f"      Релевантный результат (уверенность: {result.confidence:.2f})")
 
                                 if result.confidence > 0.8:
                                     break
                     else:
-                        print(f"      ⚠ Найдены результаты, но не релевантные")
+                        print(f"      Найдены результаты, но не релевантные")
                 else:
-                    print(f"      ❌ Не найдено результатов для: {query}")
+                    print(f"      Не найдено результатов для: {query}")
 
             except Exception as e:
-                print(f"      ⚠ Ошибка при поиске '{query}': {e}")
+                print(f"      Ошибка при поиске '{query}': {e}")
                 continue
 
         if best_relevant_result and best_confidence > 0.3:
             entry.online_metadata = self._format_online_metadata(best_relevant_result)
             entry.is_verified = True
             entry.enhancement_confidence = best_confidence
-            print(f"      🎯 Используем релевантный результат с уверенностью: {best_confidence:.2f}")
+            print(f"      Используем релевантный результат с уверенностью: {best_confidence:.2f}")
         else:
-            print(f"      ⚠ Не найдено релевантных результатов")
+            print(f"      Не найдено релевантных результатов")
             # Можно сохранить лучший результат даже если не идеально релевантный
             if results and not best_relevant_result:
                 fallback_result = results[0]
                 entry.online_metadata = self._format_online_metadata(fallback_result)
                 entry.is_verified = False  # Помечаем как непроверенный
                 entry.enhancement_confidence = fallback_result.confidence * 0.5  # Понижаем уверенность
-                print(f"      ⚠ Используем fallback результат (уверенность: {fallback_result.confidence:.2f})")
+                print(f"      Используем fallback результат (уверенность: {fallback_result.confidence:.2f})")
 
         return entry

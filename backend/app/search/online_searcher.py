@@ -24,6 +24,7 @@ class SearchResult:
     url: Optional[str] = None
     confidence: float = 0.0
     relevance_score: float = 0.0
+    is_search_link: bool = False
 
 class OnlineSearcher:
     def __init__(self, config: APIConfig):

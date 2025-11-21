@@ -2,17 +2,25 @@ import os
 import shutil
 import logging
 import uuid
+import sys
+import os
 import asyncio
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+sys.path.append(os.path.join(os.path.dirname(__file__), '../../app'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
+from .auth.dependencies import get_current_user, get_current_user_optional
+from .services.library_service import library_service
+from .models.user_models import User
 from app.citation_parser.citation_extractor import CitationExtractor
 from app.bibliography.checker import BibliographyChecker
 from app.services.simple_analysis_service import SimpleAnalysisService
+from app.services.library_service import library_service
 
 # Модели данных
 from enum import Enum
@@ -221,6 +229,43 @@ async def options_handler(rest_of_path: str):
             "Access-Control-Allow-Headers": "*",
         }
     )
+
+@app.post("/api/library/sources")
+async def add_to_library(source_data: dict):
+    """Добавление источника в библиотеку"""
+    try:
+        # Используем демо-пользователя или IP как идентификатор
+        user_id = "demo_user"
+        return await library_service.add_source(user_id, source_data)
+    except Exception as e:
+        logger.error(f"Error adding source: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/library/sources")
+async def get_library_sources(query: Optional[str] = None, page: int = 1):
+    """Поиск в библиотеке"""
+    try:
+        user_id = "demo_user"
+        if query:
+            return await library_service.search_sources(user_id, query, page)
+        else:
+            return await library_service.get_user_sources(user_id, page)
+    except Exception as e:
+        logger.error(f"Error getting sources: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/library/sources/{source_id}")
+async def delete_from_library(source_id: str):
+    """Удаление источника из библиотеки"""
+    try:
+        user_id = "demo_user"
+        return await library_service.delete_source(user_id, source_id)
+    except Exception as e:
+        logger.error(f"Error deleting source: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+@app.get("/")
+async def root():
+    return {"message": "Citation Checker API"}
 
 
 if __name__ == "__main__":

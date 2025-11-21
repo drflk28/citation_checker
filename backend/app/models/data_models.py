@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from enum import Enum
+from datetime import datetime
 
 class TextBlockType(str, Enum):
     TITLE = "title"
@@ -112,3 +113,33 @@ class AnalysisResult(BaseModel):
         if data.get('summary') is None:
             data['summary'] = {}
         super().__init__(**data)
+
+class SourceType(str, Enum):
+    ARTICLE = "article"
+    BOOK = "book"
+    THESIS = "thesis"
+    CONFERENCE = "conference"
+    WEBSITE = "website"
+    OTHER = "other"
+
+class UserSource(BaseModel):
+    id: str
+    user_id: str
+    title: str
+    authors: List[str]
+    year: Optional[int] = None
+    source_type: SourceType
+    journal: Optional[str] = None
+    publisher: Optional[str] = None
+    url: Optional[str] = None
+    doi: Optional[str] = None
+    isbn: Optional[str] = None
+    custom_citation: Optional[str] = None
+    tags: List[str] = []
+    created_at: datetime
+    last_used: datetime
+
+class SearchMatch(BaseModel):
+    source: UserSource
+    confidence: float
+    matched_fields: List[str]

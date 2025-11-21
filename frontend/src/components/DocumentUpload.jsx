@@ -39,7 +39,7 @@ const DocumentUpload = ({ onUploadSuccess }) => {
     );
 
     if (!allowedTypes.includes(`.${fileExtension}`)) {
-      alert('Please upload PDF or DOCX files only');
+      alert('Пожалуйста, загружайте только PDF или DOCX файлы');
       return;
     }
 
@@ -63,12 +63,12 @@ const DocumentUpload = ({ onUploadSuccess }) => {
       });
 
       if (response.data) {
-        alert('Document uploaded successfully!');
+        alert('Документ успешно загружен!');
         onUploadSuccess();
       }
     } catch (error) {
       console.error('Upload failed:', error);
-      alert('Upload failed. Please try again.');
+      alert('Ошибка загрузки. Пожалуйста, попробуйте снова.');
     } finally {
       setUploading(false);
       setProgress(0);
@@ -76,44 +76,38 @@ const DocumentUpload = ({ onUploadSuccess }) => {
   };
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8">
-      <div className="text-center">
-        <h2 className="text-2xl font-bold text-gray-900 mb-4">
-          Upload Document
-        </h2>
-        <p className="text-gray-600 mb-8">
-          Upload your PDF or DOCX document to check citations and bibliography
+    <div className="card">
+      <div className="upload-container">
+        <h2 className="upload-title">Загрузка документа</h2>
+        <p className="upload-description">
+          Загрузите ваш PDF или DOCX документ для проверки цитирования и библиографии
         </p>
 
         <div
-          className={`border-2 border-dashed rounded-lg p-12 mb-4 transition-colors ${
-            isDragging
-              ? 'border-blue-400 bg-blue-50'
-              : 'border-gray-300 hover:border-gray-400'
-          } ${uploading ? 'opacity-50' : ''}`}
+          className={`upload-zone ${isDragging ? 'upload-zone-dragging' : ''} ${uploading ? 'upload-zone-disabled' : ''}`}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
           {uploading ? (
-            <div className="text-center">
-              <div className="mb-4">
-                <div className="w-full bg-gray-200 rounded-full h-2.5">
+            <div className="upload-progress">
+              <div className="progress-container">
+                <div className="progress-bar">
                   <div
-                    className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                    className="progress-fill"
                     style={{ width: `${progress}%` }}
                   ></div>
                 </div>
-                <p className="text-sm text-gray-600 mt-2">
-                  Uploading... {progress}%
+                <p className="progress-text">
+                  Загрузка... {progress}%
                 </p>
               </div>
             </div>
           ) : (
             <>
-              <div className="flex justify-center mb-4">
+              <div className="upload-icon">
                 <svg
-                  className="w-12 h-12 text-gray-400"
+                  className="upload-svg"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 48 48"
@@ -126,14 +120,14 @@ const DocumentUpload = ({ onUploadSuccess }) => {
                   />
                 </svg>
               </div>
-              <p className="text-gray-600 mb-2">
-                <span className="font-medium text-blue-600">
-                  Click to upload
+              <p className="upload-instruction">
+                <span className="upload-highlight">
+                  Нажмите для загрузки
                 </span>{' '}
-                or drag and drop
+                или перетащите файл
               </p>
-              <p className="text-sm text-gray-500">
-                PDF, DOCX up to 10MB
+              <p className="upload-formats">
+                PDF, DOCX до 10MB
               </p>
             </>
           )}
@@ -142,18 +136,16 @@ const DocumentUpload = ({ onUploadSuccess }) => {
         <input
           type="file"
           id="file-upload"
-          className="hidden"
+          className="file-input"
           accept=".pdf,.docx,.doc"
           onChange={handleFileSelect}
           disabled={uploading}
         />
         <label
           htmlFor="file-upload"
-          className={`inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 ${
-            uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
-          }`}
+          className={`upload-button ${uploading ? 'upload-button-disabled' : ''}`}
         >
-          Select File
+          Выбрать файл
         </label>
       </div>
     </div>
