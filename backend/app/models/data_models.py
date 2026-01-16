@@ -73,6 +73,7 @@ class BibliographyEntry(BaseModel):
     is_verified: bool = False
     matched_citations: List[str] = Field(default_factory=list)
     online_metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    library_match: Optional[Dict[str, Any]] = Field(default_factory=dict)
     enhancement_confidence: float = 0.0
     search_queries: List[str] = Field(default_factory=list)
 

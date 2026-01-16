@@ -1,0 +1,265 @@
+/* В ваш CSS файл добавьте: */
+
+/* Стили для библиотечных совпадений */
+.entry-library-match {
+    border-left: 4px solid #4CAF50;
+    background-color: #f8fff8;
+    box-shadow: 0 2px 4px rgba(76, 175, 80, 0.1);
+}
+
+.index-library {
+    background-color: #4CAF50;
+    color: white;
+}
+
+.library-match-badge {
+    margin-left: 5px;
+    font-size: 12px;
+    opacity: 0.8;
+}
+
+.library-match-info {
+    background: #e8f5e8;
+    border-radius: 8px;
+    padding: 12px;
+    margin-top: 10px;
+    border: 1px solid #c8e6c9;
+}
+
+.library-match-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #d4e8d4;
+}
+
+.library-icon {
+    width: 16px;
+    height: 16px;
+    margin-right: 8px;
+    color: #4CAF50;
+}
+
+.library-confidence {
+    background-color: #4CAF50;
+    color: white;
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 12px;
+}
+
+.library-match-details {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.match-detail {
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.match-detail strong {
+    color: #2c3e50;
+    margin-right: 6px;
+}
+
+.matched-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-left: 6px;
+}
+
+.field-tag {
+    background: #4CAF50;
+    color: white;
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 10px;
+}
+
+.library-match-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #d4e8d4;
+}
+
+.library-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #4CAF50;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background-color 0.2s;
+}
+
+.library-btn:hover {
+    background: #45a049;
+}
+
+.library-btn .btn-icon {
+    width: 14px;
+    height: 14px;
+}
+
+.download-btn {
+    background: #2196F3;
+}
+
+.download-btn:hover {
+    background: #1976D2;
+}
+
+.content-btn {
+    background: #9C27B0;
+}
+
+.content-btn:hover {
+    background: #7B1FA2;
+}
+
+.status-library {
+    background-color: #4CAF50;
+    color: white;
+}
+
+/* Модальное окно для библиотечного источника */
+.library-source-modal .modal-content {
+    max-width: 800px;
+    max-height: 90vh;
+    overflow-y: auto;
+}
+
+.source-info-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.info-section {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 16px;
+    border: 1px solid #e9ecef;
+}
+
+.info-section h3 {
+    margin-top: 0;
+    margin-bottom: 12px;
+    color: #2c3e50;
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 12px;
+}
+
+.info-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.info-item label {
+    font-weight: 600;
+    color: #495057;
+    font-size: 13px;
+}
+
+.info-item span, .info-item a {
+    color: #212529;
+    font-size: 14px;
+}
+
+.content-section {
+    background: white;
+    border-radius: 6px;
+    padding: 12px;
+    border: 1px solid #dee2e6;
+}
+
+.content-preview {
+    line-height: 1.6;
+    color: #495057;
+}
+
+.show-more-btn {
+    background: #4CAF50;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    margin-top: 10px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.show-more-btn:hover:not(:disabled) {
+    background: #45a049;
+}
+
+.show-more-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.content-textarea {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 13px;
+    resize: vertical;
+}
+
+.content-stats {
+    font-size: 12px;
+    color: #6c757d;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid #e9ecef;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid #e9ecef;
+}
+
+.btn-copy-citation {
+    background: #6c757d;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.btn-copy-citation:hover {
+    background: #5a6268;
+}

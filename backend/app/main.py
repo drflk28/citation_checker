@@ -1,5 +1,6 @@
 import os
 import shutil
+import platform
 import logging
 import uuid
 import sys
@@ -10,7 +11,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../app'))
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -30,6 +31,47 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def check_dependencies():
+    """Проверка всех зависимостей при запуске приложения"""
+    print("=" * 50)
+    print("🔍 ПРОВЕРКА ЗАВИСИМОСТЕЙ")
+    print("=" * 50)
+
+    # Проверка PyMuPDF (fitz)
+    try:
+        import fitz
+        print("✅ PyMuPDF (fitz) - OK")
+    except ImportError:
+        print("❌ PyMuPDF (fitz) - НЕ УСТАНОВЛЕН")
+        print("   Установите: pip install PyMuPDF")
+
+    # Проверка Tesseract
+    tesseract_available = shutil.which("tesseract") is not None
+    if tesseract_available:
+        print("✅ Tesseract - OK")
+    else:
+        print("❌ Tesseract - НЕ УСТАНОВЛЕН")
+        print("   Установите для лучшего распознавания текста")
+
+    # Проверка pytesseract
+    try:
+        import pytesseract
+        print("✅ pytesseract - OK")
+    except ImportError:
+        print("❌ pytesseract - НЕ УСТАНОВЛЕН")
+        print("   Установите: pip install pytesseract")
+
+    # Проверка Pillow
+    try:
+        from PIL import Image
+        print("✅ Pillow - OK")
+    except ImportError:
+        print("❌ Pillow - НЕ УСТАНОВЛЕН")
+        print("   Установите: pip install pillow")
+
+    print("=" * 50)
+
+check_dependencies()
 
 # очистка при запуске
 def clear_all_data():
@@ -38,7 +80,6 @@ def clear_all_data():
         shutil.rmtree(uploads_dir)
     os.makedirs(uploads_dir, exist_ok=True)
     print("все данные очищены")
-
 
 clear_all_data()
 
@@ -113,12 +154,109 @@ class TextBlock:
         self.block_type = block_type
 
 # глобальный анализатор
-# document_analyzer = AnalysisService()
 analysis_service = SimpleAnalysisService()
 @app.get("/")
 async def root():
     return {"message": "Citation Checker API", "version": "1.0.0"}
 
+
+@app.put("/api/library/sources/{source_id}")
+async def update_source(source_id: str, update_data: dict):
+    """Обновляет информацию об источнике"""
+    try:
+        user_id = "demo_user"
+
+        # Получаем текущий источник
+        result = await library_service.get_source_details(user_id, source_id)
+        if not result["success"]:
+            raise HTTPException(status_code=404, detail="Источник не найден")
+
+        source = result["source"]
+
+        # Обновляем только разрешенные поля
+        allowed_fields = ['title', 'authors', 'year', 'source_type',
+                          'journal', 'publisher', 'url', 'doi', 'isbn',
+                          'custom_citation', 'tags']
+
+        updated = False
+        for field in allowed_fields:
+            if field in update_data:
+                source[field] = update_data[field]
+                updated = True
+
+        if updated:
+            # Сохраняем обновления
+            if user_id in library_service.sources:
+                for i, s in enumerate(library_service.sources[user_id]):
+                    if s['id'] == source_id:
+                        library_service.sources[user_id][i] = source
+                        break
+
+                library_service._save_sources()
+
+        return {
+            "success": True,
+            "message": "Источник успешно обновлен",
+            "source": source
+        }
+
+    except Exception as e:
+        logger.error(f"Error updating source: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/library/sources/check-duplicate")
+async def check_duplicate_source(check_data: dict):
+    """Проверяет, есть ли уже такой источник в библиотеке"""
+    try:
+        user_id = "demo_user"
+        user_sources = library_service.sources.get(user_id, [])
+
+        # Проверяем по разным критериям
+        title = check_data.get('title', '').lower().strip()
+        authors = check_data.get('authors', [])
+        year = check_data.get('year')
+
+        duplicates = []
+        for source in user_sources:
+            match_score = 0
+
+            # Проверка названия
+            if title and source.get('title', '').lower().strip() == title:
+                match_score += 3
+
+            # Проверка авторов
+            source_authors = [a.lower() for a in source.get('authors', [])]
+            check_authors = [a.lower() for a in authors]
+            common_authors = set(source_authors) & set(check_authors)
+            if common_authors:
+                match_score += len(common_authors)
+
+            # Проверка года
+            if year and str(source.get('year')) == str(year):
+                match_score += 1
+
+            if match_score >= 2:  # Порог совпадения
+                duplicates.append({
+                    "id": source['id'],
+                    "title": source.get('title'),
+                    "authors": source.get('authors', []),
+                    "year": source.get('year'),
+                    "match_score": match_score
+                })
+
+        return {
+            "success": True,
+            "has_duplicates": len(duplicates) > 0,
+            "duplicates": duplicates[:5]  # Ограничиваем количество
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking duplicates: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 @app.post("/upload", response_model=DocumentMetadata)
 async def upload_document(file: UploadFile = File(...)):
@@ -164,7 +302,6 @@ async def list_documents():
     logger.info(f"Returning {len(documents_store)} documents")
     return list(documents_store.values())
 
-# анализ документа
 # анализ документа
 @app.post("/documents/{doc_id}/analyze")
 async def analyze_document(doc_id: str):
@@ -230,15 +367,17 @@ async def options_handler(rest_of_path: str):
         }
     )
 
-@app.post("/api/library/sources")
-async def add_to_library(source_data: dict):
-    """Добавление источника в библиотеку"""
+@app.get("/api/library/sources")
+async def get_library_sources(query: Optional[str] = None, page: int = 1):
+    """Поиск в библиотеке"""
     try:
-        # Используем демо-пользователя или IP как идентификатор
         user_id = "demo_user"
-        return await library_service.add_source(user_id, source_data)
+        if query:
+            return await library_service.search_sources(user_id, query, page)
+        else:
+            return await library_service.get_user_sources(user_id, page)
     except Exception as e:
-        logger.error(f"Error adding source: {e}")
+        logger.error(f"Error getting sources: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/library/sources")
@@ -254,6 +393,125 @@ async def get_library_sources(query: Optional[str] = None, page: int = 1):
         logger.error(f"Error getting sources: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/api/debug/bibliography-search")
+async def debug_bibliography_search(entry_text: str = "Грачев, С. А., Гундорова, М. А. Бизнес-планирование"):
+    """Тестирование поиска в библиотеке для отладки"""
+    try:
+        from app.bibliography.checker import BibliographyChecker
+
+        checker = BibliographyChecker()
+
+        # Тестируем поиск
+        result = checker._search_in_library(entry_text, [entry_text])
+
+        return {
+            "success": True,
+            "entry_text": entry_text,
+            "library_match": result,
+            "library_service_available": hasattr(checker, 'library_service') and checker.library_service is not None,
+            "user_sources_count": len(checker.library_service.sources.get("demo_user", [])) if hasattr(checker,
+                                                                                                       'library_service') else 0
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@app.get("/api/library/sources/{source_id}")
+async def get_source_details(source_id: str):
+    """Получить детальную информацию об источнике"""
+    try:
+        user_id = "demo_user"
+        result = await library_service.get_source_details(user_id, source_id)
+
+        if not result["success"]:
+            raise HTTPException(status_code=404, detail=result["message"])
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting source details: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/library/sources/{source_id}/download")
+async def download_source_file(source_id: str):
+    """Скачать файл источника"""
+    try:
+        user_id = "demo_user"
+        source_result = await library_service.get_source_details(user_id, source_id)
+
+        if not source_result['success']:
+            raise HTTPException(status_code=404, detail="Источник не найден")
+
+        source = source_result['source']
+        file_path = source.get('file_path')
+
+        if not file_path or not os.path.exists(file_path):
+            print(f"⚠️ Файл не найден: {file_path}")
+            raise HTTPException(status_code=404, detail="Файл источника не найден")
+
+        # Получаем оригинальное имя файла или используем имя из пути
+        filename = source.get('filename') or os.path.basename(file_path)
+
+        print(f"✅ Скачивание файла: {file_path}")
+        print(f"📁 Имя файла для скачивания: {filename}")
+        print(f"📊 Размер файла: {os.path.getsize(file_path) if os.path.exists(file_path) else 0} байт")
+
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type='application/octet-stream',
+            headers={
+                'Content-Disposition': f'attachment; filename="{filename}"'
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Ошибка при скачивании файла: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Ошибка при скачивании файла: {str(e)}")
+
+
+@app.get("/api/debug/source-files")
+async def debug_source_files():
+    """Отладка файлов источников"""
+    try:
+        user_id = "demo_user"
+        user_sources = library_service.sources.get(user_id, [])
+
+        file_info = []
+
+        for source in user_sources:
+            file_path = source.get('file_path')
+            exists = os.path.exists(file_path) if file_path else False
+
+            file_info.append({
+                'id': source.get('id'),
+                'title': source.get('title'),
+                'filename': source.get('filename'),
+                'file_path': file_path,
+                'exists': exists,
+                'has_file': source.get('has_file', False),
+                'size': os.path.getsize(file_path) if exists and file_path else 0
+            })
+
+        return {
+            "success": True,
+            "total_sources": len(user_sources),
+            "files": file_info
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
 @app.delete("/api/library/sources/{source_id}")
 async def delete_from_library(source_id: str):
     """Удаление источника из библиотеки"""
@@ -263,6 +521,269 @@ async def delete_from_library(source_id: str):
     except Exception as e:
         logger.error(f"Error deleting source: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/library/sources/{source_id}/full-content")
+async def get_source_full_content(source_id: str):
+    """Получает полный текст источника"""
+    try:
+        user_id = "demo_user"
+        result = await library_service.get_source_details(user_id, source_id)
+
+        if not result["success"]:
+            raise HTTPException(status_code=404, detail=result["message"])
+
+        source = result["source"]
+        full_content = source.get('full_content', '')
+
+        if not full_content:
+            raise HTTPException(status_code=404, detail="Текст источника не найден")
+
+        return {
+            "success": True,
+            "source_id": source_id,
+            "title": source.get("title"),
+            "full_content": full_content,
+            "content_length": len(full_content)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting full content: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/library/sources/{source_id}/content")
+async def get_source_content(source_id: str):
+    """Получить содержание источника"""
+    try:
+        user_id = "demo_user"
+        result = await library_service.get_source_content(user_id, source_id)
+
+        if not result["success"]:
+            raise HTTPException(status_code=404, detail=result["message"])
+
+        return result
+    except Exception as e:
+        logger.error(f"Error getting source content: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/library/verify-citation")
+async def verify_citation_content(verification_data: dict):
+    """Проверить соответствие цитаты содержанию источника"""
+    try:
+        user_id = "demo_user"
+        citation_text = verification_data.get('citation_text')
+        source_id = verification_data.get('source_id')
+
+        if not citation_text or not source_id:
+            raise HTTPException(status_code=400, detail="Необходимы citation_text и source_id")
+
+        return await library_service.verify_citation_content(user_id, citation_text, source_id)
+    except Exception as e:
+        logger.error(f"Error verifying citation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/library/sources/with-content")
+async def add_source_with_content(source_data: dict):
+    """Добавить источник с содержанием"""
+    try:
+        user_id = "demo_user"
+        content = source_data.pop('content', None)  # Извлекаем содержание если есть
+
+        return await library_service.add_source(user_id, source_data, content)
+    except Exception as e:
+        logger.error(f"Error adding source with content: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/library/sources/upload")
+async def upload_source_file(file: UploadFile = File(...)):
+    """Загружает файл источника в библиотеку"""
+    try:
+        user_id = "demo_user"
+        print(f"API: Uploading source file: {file.filename}")
+
+        # Логируем информацию о файле
+        print(f"API: File size: {file.size if hasattr(file, 'size') else 'unknown'}")
+        print(f"API: File content type: {file.content_type}")
+
+        result = await library_service.add_source_from_file(user_id, file)
+
+        print(f"API: Upload result: {result}")
+
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("message", "Upload failed"))
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading source file: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Ошибка при загрузке файла: {str(e)}")
+
+@app.post("/api/library/sources/manual")
+async def add_manual_source(source_data: dict):
+    """Добавляет источник через ручной ввод"""
+    try:
+        user_id = "demo_user"
+        return await library_service.add_source(user_id, source_data)
+    except Exception as e:
+        logger.error(f"Error adding manual source: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/debug/sources/{source_id}/parse-info")
+async def debug_parse_info(source_id: str):
+    """Отладочная информация о парсинге источника"""
+    try:
+        user_id = "demo_user"
+        result = await library_service.get_source_details(user_id, source_id)
+
+        if not result["success"]:
+            return {
+                "success": False,
+                "message": result["message"]
+            }
+
+        source = result["source"]
+
+        debug_info = {
+            "source_id": source_id,
+            "title": source.get("title"),
+            "has_file": source.get("has_file", False),
+            "file_path": source.get("file_path"),
+            "file_exists": os.path.exists(source.get("file_path", "")) if source.get("file_path") else False,
+            "has_content": source.get("has_content", False),
+            "has_full_content": source.get("has_full_content", False),
+            "content_length": source.get("content_length", 0),
+            "content_preview_length": len(source.get("content_preview", "")),
+            "text_length": source.get("text_length", 0)
+        }
+
+        # Попробуем перепарсить файл для отладки
+        if source.get("file_path") and os.path.exists(source.get("file_path")):
+            try:
+                from app.services.simple_source_processor import SimpleSourceProcessor
+                from pathlib import Path
+
+                processor = SimpleSourceProcessor()
+                file_path = Path(source['file_path'])
+
+                debug_info["file_info"] = {
+                    "size": file_path.stat().st_size if file_path.exists() else 0,
+                    "extension": file_path.suffix,
+                    "exists": file_path.exists(),
+                    "last_modified": datetime.fromtimestamp(
+                        file_path.stat().st_mtime).isoformat() if file_path.exists() else None
+                }
+
+                # Пробуем извлечь текст заново
+                reextracted = await processor.extract_text_from_file(file_path)
+                debug_info["reparse"] = {
+                    "success": bool(reextracted and reextracted.strip()),
+                    "length": len(reextracted),
+                    "preview": reextracted[:200] if reextracted else ""
+                }
+
+                # Сравниваем с сохраненным текстом
+                saved_content = source.get('full_content', '')
+                debug_info["comparison"] = {
+                    "same_length": len(reextracted) == len(saved_content),
+                    "reextracted_length": len(reextracted),
+                    "saved_length": len(saved_content),
+                    "difference": abs(len(reextracted) - len(saved_content))
+                }
+
+            except Exception as e:
+                debug_info["reparse_error"] = str(e)
+
+        return {
+            "success": True,
+            "debug_info": debug_info
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.get("/api/debug/storage")
+async def debug_storage():
+    """Отладочная информация о хранилище"""
+    try:
+        data_dir = Path("data/library")
+        contents_dir = data_dir / "contents"
+
+        storage_info = {
+            "data_dir": str(data_dir),
+            "data_dir_exists": data_dir.exists(),
+            "contents_dir": str(contents_dir),
+            "contents_dir_exists": contents_dir.exists(),
+            "total_sources": library_service.get_all_sources_count() if hasattr(library_service,
+                                                                                'get_all_sources_count') else "N/A"
+        }
+
+        if contents_dir.exists():
+            content_files = list(contents_dir.glob("*.txt"))
+            storage_info["content_files"] = {
+                "count": len(content_files),
+                "files": [str(f.name) for f in content_files[:10]],  # Первые 10 файлов
+                "total_size": sum(f.stat().st_size for f in content_files)
+            }
+
+        return {
+            "success": True,
+            "storage_info": storage_info
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.get("/api/library/stats")
+async def get_library_stats():
+    """Статистика библиотеки"""
+    try:
+        user_id = "demo_user"
+        user_sources = library_service.sources.get(user_id, [])
+
+        stats = {
+            "total_sources": len(user_sources),
+            "sources_with_files": len([s for s in user_sources if s.get('has_file')]),
+            "sources_with_content": len([s for s in user_sources if s.get('has_content')]),
+            "sources_by_type": {},
+            "total_content_size": 0
+        }
+
+        # Считаем по типам
+        for source in user_sources:
+            source_type = source.get('source_type', 'unknown')
+            stats["sources_by_type"][source_type] = stats["sources_by_type"].get(source_type, 0) + 1
+
+            if source.get('text_length'):
+                stats["total_content_size"] += source.get('text_length', 0)
+
+        # Добавляем временные метки
+        if user_sources:
+            stats["oldest_source"] = min(s.get('created_at', '') for s in user_sources)
+            stats["newest_source"] = max(s.get('created_at', '') for s in user_sources)
+
+        return {
+            "success": True,
+            "stats": stats
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting library stats: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 @app.get("/")
 async def root():
     return {"message": "Citation Checker API"}

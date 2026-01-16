@@ -52,34 +52,11 @@ const PersonalLibrary = () => {
 
     const handleAddSource = async (sourceData) => {
         try {
-            const response = await axios.post(`${API_BASE}/sources`, sourceData);
-
-            if (response.data.success) {
-                // Обновляем локальное состояние
-                const newSource = {
-                    id: response.data.source_id,
-                    ...sourceData,
-                    created_at: new Date().toISOString(),
-                    last_used: new Date().toISOString()
-                };
-
-                setSources(prev => [newSource, ...prev]);
-                alert('Источник успешно добавлен в библиотеку!');
-            } else {
-                throw new Error(response.data.message);
-            }
+            // Обновляем список источников
+            await loadSourcesFromBackend();
+            alert('Источник успешно добавлен в библиотеку!');
         } catch (error) {
-            console.error('Error adding source:', error);
-            // Fallback to localStorage
-            const newSource = {
-                id: Date.now().toString(),
-                ...sourceData,
-                created_at: new Date().toISOString(),
-                last_used: new Date().toISOString()
-            };
-            setSources(prev => [newSource, ...prev]);
-            saveSourcesToStorage([newSource, ...sources]);
-            alert('Источник добавлен в локальную библиотеку (бэкенд недоступен)');
+            console.error('Error refreshing sources:', error);
         }
     };
 
@@ -114,7 +91,6 @@ const PersonalLibrary = () => {
         }
     };
 
-    // Остальной код остается таким же...
     const handleSearch = (query) => {
         setSearchQuery(query);
     };

@@ -1,71 +1,303 @@
-// frontend/src/components/SourceList.jsx
-import React from 'react';
+import React, { useState } from 'react';
+import axios from 'axios';
+import '../css/SourceList.css';
 
-const SourceList = ({ sources, onDelete, onExportAsDocument }) => {
+const SourceList = ({ sources, onDelete, onRefresh }) => {
+    const [selectedSource, setSelectedSource] = useState(null);
+    const [showDetails, setShowDetails] = useState(false);
+    const [loading, setLoading] = useState(false);
+
     if (!sources || sources.length === 0) {
         return (
-            <div className="empty-state">
-                <p>Источники не найдены</p>
+            <div className="empty-library">
+                <div className="empty-icon">📚</div>
+                <h3>Библиотека пуста</h3>
+                <p>Добавьте ваши первые источники для начала работы</p>
             </div>
         );
     }
 
+    const handleViewDetails = async (sourceId) => {
+        setLoading(true);
+        try {
+            const response = await axios.get(`http://localhost:8001/api/library/sources/${sourceId}`);
+            if (response.data.success) {
+                setSelectedSource(response.data.source);
+                setShowDetails(true);
+            }
+        } catch (error) {
+            console.error('Error fetching source details:', error);
+            alert('Ошибка при загрузке информации об источнике');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleDownload = async (sourceId, sourceTitle) => {
+        try {
+            const response = await fetch(`http://localhost:8001/api/library/sources/${sourceId}/download`);
+            if (response.ok) {
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = `${sourceTitle.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+            } else {
+                alert('Файл источника недоступен для скачивания');
+            }
+        } catch (error) {
+            console.error('Download error:', error);
+            alert('Ошибка при скачивании файла');
+        }
+    };
+
+    const formatAuthors = (authors) => {
+        if (!authors || authors.length === 0) return 'Авторы не указаны';
+        return authors.join(', ');
+    };
+
+    const getSourceIcon = (sourceType) => {
+        const icons = {
+            'book': '📘',
+            'article': '📄',
+            'thesis': '🎓',
+            'conference': '👥',
+            'web': '🌐',
+            'other': '📁'
+        };
+        return icons[sourceType] || '📁';
+    };
+
     return (
-        <div className="source-list">
-            {sources.map(source => (
-                <div key={source.id} className="source-card">
-                    <div className="source-content">
-                        <h3 className="source-title">{source.title}</h3>
-                        <div className="source-meta">
-                            <p className="source-authors">
-                                <strong>Авторы:</strong> {source.authors?.join(', ') || 'Не указаны'}
-                            </p>
-                            {source.year && (
-                                <p className="source-year">
-                                    <strong>Год:</strong> {source.year}
-                                </p>
+        <>
+            <div className="sources-grid">
+                {sources.map(source => (
+                    <div key={source.id} className="source-card">
+                        <div className="source-header">
+                            <div className="source-type-icon">
+                                {getSourceIcon(source.source_type)}
+                            </div>
+                            <div className="source-title-wrapper">
+                                <h3 className="source-title" title={source.title}>
+                                    {source.title}
+                                </h3>
+                                <div className="source-meta">
+                                    <span className="source-authors">
+                                        {formatAuthors(source.authors)}
+                                    </span>
+                                    {source.year && (
+                                        <span className="source-year">• {source.year}</span>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="source-details">
+                            {source.journal && (
+                                <div className="source-field">
+                                    <span className="field-label">Журнал:</span>
+                                    <span className="field-value">{source.journal}</span>
+                                </div>
                             )}
                             {source.publisher && (
-                                <p className="source-publisher">
-                                    <strong>Издательство:</strong> {source.publisher}
-                                </p>
-                            )}
-                            {source.journal && (
-                                <p className="source-journal">
-                                    <strong>Журнал:</strong> {source.journal}
-                                </p>
+                                <div className="source-field">
+                                    <span className="field-label">Издательство:</span>
+                                    <span className="field-value">{source.publisher}</span>
+                                </div>
                             )}
                             {source.doi && (
-                                <p className="source-doi">
-                                    <strong>DOI:</strong> {source.doi}
-                                </p>
+                                <div className="source-field">
+                                    <span className="field-label">DOI:</span>
+                                    <span className="field-value doi-link">{source.doi}</span>
+                                </div>
                             )}
-                            {source.isbn && (
-                                <p className="source-isbn">
-                                    <strong>ISBN:</strong> {source.isbn}
-                                </p>
+                        </div>
+
+                        <div className="source-actions">
+                            <button
+                                onClick={() => handleViewDetails(source.id)}
+                                className="btn-view"
+                                disabled={loading}
+                            >
+                                {loading ? '⏳' : '👁'} Подробнее
+                            </button>
+
+                            {source.has_file && (
+                                <button
+                                    onClick={() => handleDownload(source.id, source.title)}
+                                    className="btn-download"
+                                >
+                                    📥 Скачать
+                                </button>
+                            )}
+
+                            {source.url && (
+                                <a
+                                    href={source.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="btn-external"
+                                >
+                                    🔗 Открыть
+                                </a>
+                            )}
+
+                            <button
+                                onClick={() => onDelete(source.id)}
+                                className="btn-delete"
+                                title="Удалить источник"
+                            >
+                                🗑️
+                            </button>
+                        </div>
+
+                        <div className="source-footer">
+                            <span className="source-date">
+                                Добавлен: {new Date(source.created_at).toLocaleDateString('ru-RU')}
+                            </span>
+                            {source.has_file && (
+                                <span className="file-badge">📎 Есть файл</span>
                             )}
                         </div>
                     </div>
-                    <div className="source-actions">
-                        <button
-                            onClick={() => onExportAsDocument(source.id)}
-                            className="btn-export"
-                            title="Сохранить как документ для анализа"
-                        >
-                            📄 Экспорт
-                        </button>
-                        <button
-                            onClick={() => onDelete(source.id)}
-                            className="btn-delete"
-                            title="Удалить источник"
-                        >
-                            🗑️ Удалить
-                        </button>
+                ))}
+            </div>
+
+            {/* Модальное окно с деталями источника */}
+            {showDetails && selectedSource && (
+                <div className="modal-overlay" onClick={() => setShowDetails(false)}>
+                    <div className="modal-content" onClick={e => e.stopPropagation()}>
+                        <div className="modal-header">
+                            <h2>Детали источника</h2>
+                            <button
+                                className="close-btn"
+                                onClick={() => setShowDetails(false)}
+                            >
+                                ✕
+                            </button>
+                        </div>
+
+                        <div className="modal-body">
+                            <div className="detail-section">
+                                <h3>📋 Основная информация</h3>
+                                <div className="detail-grid">
+                                    <div className="detail-item">
+                                        <label>Название:</label>
+                                        <span>{selectedSource.title}</span>
+                                    </div>
+                                    <div className="detail-item">
+                                        <label>Авторы:</label>
+                                        <span>{formatAuthors(selectedSource.authors)}</span>
+                                    </div>
+                                    <div className="detail-item">
+                                        <label>Год:</label>
+                                        <span>{selectedSource.year || 'Не указан'}</span>
+                                    </div>
+                                    <div className="detail-item">
+                                        <label>Тип:</label>
+                                        <span>
+                                            {selectedSource.source_type === 'book' ? 'Книга' :
+                                             selectedSource.source_type === 'article' ? 'Статья' :
+                                             selectedSource.source_type === 'thesis' ? 'Диссертация' :
+                                             selectedSource.source_type === 'conference' ? 'Конференция' :
+                                             selectedSource.source_type === 'web' ? 'Веб-сайт' : 'Другое'}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {selectedSource.journal && (
+                                <div className="detail-section">
+                                    <h3>📖 Публикация</h3>
+                                    <div className="detail-item">
+                                        <label>Журнал/Сборник:</label>
+                                        <span>{selectedSource.journal}</span>
+                                    </div>
+                                    {selectedSource.publisher && (
+                                        <div className="detail-item">
+                                            <label>Издательство:</label>
+                                            <span>{selectedSource.publisher}</span>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {(selectedSource.doi || selectedSource.isbn || selectedSource.url) && (
+                                <div className="detail-section">
+                                    <h3>🔗 Идентификаторы и ссылки</h3>
+                                    <div className="detail-grid">
+                                        {selectedSource.doi && (
+                                            <div className="detail-item">
+                                                <label>DOI:</label>
+                                                <span className="identifier">{selectedSource.doi}</span>
+                                            </div>
+                                        )}
+                                        {selectedSource.isbn && (
+                                            <div className="detail-item">
+                                                <label>ISBN:</label>
+                                                <span className="identifier">{selectedSource.isbn}</span>
+                                            </div>
+                                        )}
+                                        {selectedSource.url && (
+                                            <div className="detail-item">
+                                                <label>URL:</label>
+                                                <a href={selectedSource.url} target="_blank" rel="noopener noreferrer">
+                                                    {selectedSource.url}
+                                                </a>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {selectedSource.content_preview && (
+                                <div className="detail-section">
+                                    <h3>📄 Содержание</h3>
+                                    <div className="content-preview">
+                                        <p>{selectedSource.content_preview}</p>
+                                        {selectedSource.content && selectedSource.content.length > 500 && (
+                                            <div className="content-more">
+                                                <em>... полный текст доступен в файле источника</em>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {selectedSource.custom_citation && (
+                                <div className="detail-section">
+                                    <h3>📝 Библиографическая запись</h3>
+                                    <div className="citation-preview">
+                                        {selectedSource.custom_citation}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="modal-actions">
+                            {selectedSource.has_file && (
+                                <button
+                                    onClick={() => handleDownload(selectedSource.id, selectedSource.title)}
+                                    className="btn-download-large"
+                                >
+                                    📥 Скачать файл источника
+                                </button>
+                            )}
+                            <button
+                                onClick={() => setShowDetails(false)}
+                                className="btn-close"
+                            >
+                                Закрыть
+                            </button>
+                        </div>
                     </div>
                 </div>
-            ))}
-        </div>
+            )}
+        </>
     );
 };
 

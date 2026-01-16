@@ -76,9 +76,18 @@ class SimpleAnalysisService:
                     'matched_citations': entry.matched_citations,
                     'enhancement_confidence': entry.enhancement_confidence,
                     'search_queries': entry.search_queries,
-                    'online_metadata': self._ensure_serializable(entry.online_metadata)
+                    'online_metadata': self._ensure_serializable(entry.online_metadata),
+                    'library_match': self._ensure_serializable(entry.library_match)  # Добавляем library_match
                 }
                 bibliography_entries.append(entry_dict)
+
+            # Логируем статистику по найденным в библиотеке
+            library_matches = [e for e in bibliography_entries if e.get('library_match')]
+            print(f"📚 Найдено {len(library_matches)} совпадений в локальной библиотеке")
+
+            for match in library_matches[:3]:  # Показываем первые 3 совпадения
+                lib_match = match.get('library_match', {})
+                print(f"   - {lib_match.get('title', 'No title')} (ID: {lib_match.get('source_id')})")
 
             # 6. Проверка соответствия
             print("Проверяем соответствие цитат и библиографии...")
