@@ -784,6 +784,290 @@ async def get_library_stats():
             "success": False,
             "error": str(e)
         }
+
+
+@app.post("/api/check-citations-in-library")
+async def check_citations_in_library(check_request: dict):
+    """Проверяет цитаты из документа в локальной библиотеке"""
+    try:
+        user_id = "demo_user"
+
+        # Получаем все источники пользователя
+        user_sources = library_service.sources.get(user_id, [])
+
+        if not user_sources:
+            return {
+                "success": False,
+                "message": "Библиотека пользователя пуста",
+                "results": []
+            }
+
+        # Извлекаем тексты источников
+        source_texts = []
+        for source in user_sources:
+            if source.get('has_content'):
+                source_texts.append({
+                    'id': source['id'],
+                    'title': source.get('title', ''),
+                    'full_content': source.get('full_content', ''),
+                    'authors': source.get('authors', []),
+                    'year': source.get('year')
+                })
+
+        checker = BibliographyChecker()
+        results = []
+
+        # Проходим по всем цитатам из запроса
+        for citation_data in check_request.get('citations', []):
+            citation_text = citation_data.get('text', '')
+            context = citation_data.get('context', '')
+
+            if citation_text and context:
+                result = checker.find_citation_in_sources(citation_text, context, source_texts)
+                results.append(result)
+
+        return {
+            "success": True,
+            "total_citations_checked": len(results),
+            "total_sources_searched": len(source_texts),
+            "results": results
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking citations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/find-specific-citation")
+async def find_specific_citation(citation_data: dict):
+    """Ищет конкретную цитату в библиотеке"""
+    try:
+        user_id = "demo_user"
+        citation_text = citation_data.get('citation_text', '')
+        context = citation_data.get('context', '')
+
+        if not citation_text or not context:
+            raise HTTPException(
+                status_code=400,
+                detail="Необходимы citation_text и context"
+            )
+
+        # Получаем все источники пользователя
+        user_sources = library_service.sources.get(user_id, [])
+
+        if not user_sources:
+            return {
+                "success": False,
+                "message": "Библиотека пользователя пуста",
+                "citation_text": citation_text
+            }
+
+        # Извлекаем тексты источников
+        source_texts = []
+        for source in user_sources:
+            if source.get('has_content'):
+                source_texts.append({
+                    'id': source['id'],
+                    'title': source.get('title', ''),
+                    'full_content': source.get('full_content', ''),
+                    'authors': source.get('authors', []),
+                    'year': source.get('year')
+                })
+
+        checker = BibliographyChecker()
+        result = checker.find_citation_in_sources(citation_text, context, source_texts)
+
+        return {
+            "success": True,
+            "citation_text": citation_text,
+            "context": context,
+            "search_results": result
+        }
+
+    except Exception as e:
+        logger.error(f"Error finding citation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/verify-citation-semantically")
+async def verify_citation_semantically(verification_data: dict):
+    """Семантическая проверка цитаты в источнике"""
+    try:
+        user_id = "demo_user"
+
+        citation_data = verification_data.get('citation_data')
+        source_id = verification_data.get('source_id')
+
+        if not citation_data or not source_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Необходимы citation_data и source_id"
+            )
+
+        # Получаем данные источника
+        source_result = await library_service.get_source_details(user_id, source_id)
+        if not source_result["success"]:
+            raise HTTPException(status_code=404, detail="Источник не найден")
+
+        # Выполняем семантическую проверку
+        from app.bibliography.checker import BibliographyChecker
+        checker = BibliographyChecker()
+
+        result = checker.verify_citation_semantically(citation_data, source_result["source"])
+
+        return {
+            "success": True,
+            "verification_result": result,
+            "citation_preview": citation_data.get('text', '')[:100],
+            "source_title": source_result["source"].get('title')
+        }
+
+    except Exception as e:
+        logger.error(f"Error in semantic verification: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/batch-verify-citations")
+async def batch_verify_citations(batch_data: dict):
+    """Пакетная семантическая проверка нескольких цитат"""
+    try:
+        user_id = "demo_user"
+
+        citations = batch_data.get('citations', [])
+        source_id = batch_data.get('source_id')
+
+        if not citations or not source_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Необходимы citations и source_id"
+            )
+
+        # Получаем данные источника
+        source_result = await library_service.get_source_details(user_id, source_id)
+        if not source_result["success"]:
+            raise HTTPException(status_code=404, detail="Источник не найден")
+
+        # Выполняем пакетную проверку
+        from app.semantic_matcher import semantic_matcher
+
+        result = semantic_matcher.batch_verify_citations(citations, source_result["source"])
+
+        return {
+            "success": True,
+            "batch_result": result,
+            "source_info": {
+                "id": source_id,
+                "title": source_result["source"].get('title')
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error in batch verification: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/debug/semantic-match/{source_id}/{citation_id}")
+async def debug_semantic_match(source_id: str, citation_id: str):
+    """Отладочный эндпоинт для семантического сопоставления"""
+    try:
+        user_id = "demo_user"
+
+        # Получаем данные источника
+        source_result = await library_service.get_source_details(user_id, source_id)
+        if not source_result["success"]:
+            return {
+                "success": False,
+                "error": "Источник не найден"
+            }
+
+        # В реальном приложении здесь нужно получить цитату по citation_id
+        # Для демо используем тестовую цитату
+        test_citation = {
+            "id": citation_id,
+            "text": "Методы анализа данных в экономических исследованиях",
+            "context": "В современных экономических исследованиях все большее значение приобретают методы анализа данных...",
+            "full_paragraph": "В современных экономических исследованиях все большее значение приобретают методы анализа данных, которые позволяют выявлять скрытые закономерности и делать обоснованные прогнозы."
+        }
+
+        from app.semantic_matcher import semantic_matcher
+
+        # Находим семантические совпадения
+        matches = semantic_matcher.find_semantic_matches(
+            test_citation['full_paragraph'],
+            source_result['source'].get('full_content', '')
+        )
+
+        # Вычисляем схожесть
+        similarity = semantic_matcher.calculate_semantic_similarity(
+            test_citation['full_paragraph'],
+            source_result['source'].get('full_content', '')
+        )
+
+        return {
+            "success": True,
+            "source_id": source_id,
+            "citation": test_citation,
+            "semantic_similarity": similarity,
+            "matches_found": len(matches),
+            "top_matches": matches[:3] if matches else []
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.post("/documents/{doc_id}/semantic-check")
+async def start_semantic_check(doc_id: str, background_tasks: BackgroundTasks):
+    """Запускает семантическую проверку в фоновом режиме"""
+    try:
+        # Получаем результат анализа
+        result = analysis_service.get_analysis_result(doc_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Document analysis not found")
+
+        # Запускаем семантическую проверку в фоне
+        background_tasks.add_task(
+            analysis_service.perform_semantic_check,
+            doc_id
+        )
+
+        return {
+            "success": True,
+            "message": "Семантическая проверка запущена в фоновом режиме",
+            "doc_id": doc_id
+        }
+
+    except Exception as e:
+        logger.error(f"Error starting semantic check: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/documents/{doc_id}/semantic-status")
+async def get_semantic_status(doc_id: str):
+    """Получает статус семантической проверки"""
+    try:
+        result = analysis_service.get_analysis_result(doc_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Document analysis not found")
+
+        semantic_stats = result.get('semantic_verification_stats', {})
+
+        return {
+            "success": True,
+            "doc_id": doc_id,
+            "semantic_check_available": result.get('semantic_check_available', False),
+            "semantic_check_pending": result.get('semantic_check_pending', True),
+            "semantic_stats": semantic_stats,
+            "citations_count": len(result.get('citations', [])),
+            "verified_citations": len([c for c in result.get('citations', []) if c.get('is_verified', False)])
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting semantic status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 @app.get("/")
 async def root():
     return {"message": "Citation Checker API"}

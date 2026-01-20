@@ -313,3 +313,101 @@
     transform: translateY(-1px);
     transition: all 0.2s ease;
 }
+
+.citation-library-checker-container {
+  margin-top: 24px;
+}
+
+.citation-library-checker-container .citation-library-checker {
+  margin: 0;
+}
+
+/* Адаптивные стили для совместного отображения */
+@media (max-width: 768px) {
+  .citation-library-checker-container {
+    margin-top: 16px;
+  }
+
+  .citation-library-checker-container .checker-header {
+    padding: 16px;
+  }
+
+  .citation-library-checker-container .checker-header h2 {
+    font-size: 1.25rem;
+  }
+}
+
+.card + .citation-library-checker-container {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 24px;
+}
+
+/* Стили для разделения контента */
+.analysis-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.citations-tab {
+  padding: 20px;
+}
+
+.citation-item {
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 12px;
+  transition: box-shadow 0.2s;
+}
+
+.citation-item:hover {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.citation-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.citation-main {
+  flex: 1;
+}
+
+.citation-text {
+  font-size: 16px;
+  line-height: 1.5;
+  color: #333;
+  margin: 0 0 8px 0;
+  font-weight: 500;
+}
+
+.citation-context {
+  font-size: 14px;
+  line-height: 1.4;
+  color: #666;
+  margin: 0;
+  font-style: italic;
+  background: #f9f9f9;
+  padding: 8px;
+  border-radius: 4px;
+}
+
+.citation-style {
+  font-size: 12px;
+  color: #888;
+  background: #f0f0f0;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.empty-message {
+  text-align: center;
+  color: #888;
+  font-style: italic;
+  padding: 40px 0;
+}

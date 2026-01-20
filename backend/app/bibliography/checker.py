@@ -9,6 +9,8 @@ from app.search.online_searcher import OnlineSearcher, SearchResult
 from app.config import APIConfig
 from app.search.russian_sources import RussianSourcesSearcher
 from app.services.library_service import library_service
+from app.bibliography.semantic_matcher import semantic_matcher
+import logging
 
 class BibliographyChecker:
     def __init__(self):
@@ -28,6 +30,21 @@ class BibliographyChecker:
         self.searcher = OnlineSearcher(APIConfig())
         self.russian_searcher = RussianSourcesSearcher()
         self.library_service = library_service
+        self.semantic_matcher = semantic_matcher
+        self.logger = logging.getLogger(__name__)
+
+    def _check_authors_strict(self, search_params: Dict, source: Dict) -> bool:
+        """Строгая проверка совпадения авторов"""
+        if not search_params.get('authors') or not source.get('authors'):
+            return False
+
+        search_authors = [self._normalize_author_name(a) for a in search_params['authors']]
+        source_authors = [self._normalize_author_name(a) for a in source['authors']]
+
+        # Проверяем, есть ли хотя бы один общий автор
+        common_authors = set(search_authors).intersection(set(source_authors))
+
+        return len(common_authors) > 0
 
     def find_bibliography_section(self, text_blocks: List[TextBlock]) -> List[TextBlock]:
         print("Поиск реального раздела библиографии...")
@@ -365,6 +382,67 @@ class BibliographyChecker:
                 matched_fields.append('year')
 
         return list(set(matched_fields))  # Убираем дубликаты
+
+    def verify_citation_in_source(self, citation_context: str, source_content: str) -> Dict[str, Any]:
+        """Проверяет, содержит ли источник семантически похожий текст"""
+        if not source_content or not citation_context:
+            return {
+                'found': False,
+                'confidence': 0,
+                'reason': 'Недостаточно данных для проверки'
+            }
+
+        # Извлекаем ключевые слова
+        keywords = self._extract_keywords(citation_context)
+
+        # Ищем ключевые слова в источнике
+        matches = []
+        source_lower = source_content.lower()
+
+        for keyword in keywords:
+            if keyword in source_lower:
+                matches.append(keyword)
+
+        # Рассчитываем уверенность
+        confidence = self._calculate_match_confidence(len(matches), len(keywords))
+
+        # Находим лучший фрагмент
+        best_snippet = self._find_best_snippet_by_keywords(source_content, matches)
+
+        if len(matches) > 0:
+            return {
+                'found': True,
+                'confidence': confidence,
+                'match_type': 'semantic',
+                'matched_keywords': matches,
+                'best_snippet': best_snippet,
+                'keywords_found': len(matches),
+                'keywords_total': len(keywords)
+            }
+        else:
+            return {
+                'found': False,
+                'confidence': 0,
+                'reason': 'Ключевые слова цитаты не найдены в источнике'
+            }
+
+    def _calculate_match_confidence(self, found: int, total: int) -> float:
+        """Рассчитывает уверенность совпадения"""
+        if total == 0:
+            return 0
+
+        ratio = found / total
+
+        if ratio >= 0.7:
+            return 90
+        elif ratio >= 0.5:
+            return 75
+        elif ratio >= 0.3:
+            return 60
+        elif ratio >= 0.2:
+            return 40
+        else:
+            return 20
 
     def _calculate_library_match_score(self, source: Dict, search_params: Dict) -> int:
         """Вычисляет оценку совпадения - ИСПРАВЛЕННАЯ"""
@@ -1284,3 +1362,337 @@ class BibliographyChecker:
                 print(f"      Используем fallback результат (уверенность: {fallback_result.confidence:.2f})")
 
         return entry
+
+    def find_citation_in_sources(self, citation_text: str, context: str, source_texts: List[Dict]) -> Dict:
+        """Ищет конкретную цитату в текстах источников"""
+        results = []
+
+        for source in source_texts:
+            source_content = source.get('full_content', '')
+            if not source_content:
+                continue
+
+            # Упрощенная проверка: ищем ключевые слова из контекста цитаты
+            search_keywords = self._extract_keywords_from_context(context)
+
+            matches = []
+            for keyword in search_keywords[:5]:  # Проверяем первые 5 ключевых слов
+                if keyword and len(keyword) > 3:  # Только слова длиной > 3 символов
+                    if keyword.lower() in source_content.lower():
+                        matches.append(keyword)
+
+            if matches:
+                # Находим фрагмент с максимальным количеством совпадений
+                best_snippet = self._find_best_snippet(source_content, matches)
+                match_score = len(matches)
+
+                results.append({
+                    'source_id': source.get('id'),
+                    'source_title': source.get('title'),
+                    'match_score': match_score,
+                    'matched_keywords': matches,
+                    'snippet': best_snippet,
+                    'full_content_preview': source_content[:500] + "..." if len(
+                        source_content) > 500 else source_content
+                })
+
+        # Сортируем по количеству совпадений
+        results.sort(key=lambda x: x['match_score'], reverse=True)
+
+        return {
+            'citation_text': citation_text,
+            'context': context,
+            'found_in_sources': results[:3] if results else [],  # Топ-3 результатов
+            'total_matches': len(results)
+        }
+
+    def _extract_keywords_from_context(self, context: str) -> List[str]:
+        """Извлекает ключевые слова из контекста цитаты"""
+        # Убираем стоп-слова и короткие слова
+        stop_words = {'и', 'в', 'на', 'по', 'с', 'из', 'для', 'что', 'как', 'это', 'то', 'же', 'все', 'его', 'их'}
+
+        words = re.findall(r'\b[а-яА-ЯёЁ]{4,}\b', context.lower())
+        keywords = [word for word in words if word not in stop_words]
+
+        return list(set(keywords))  # Убираем дубликаты
+
+    def _find_best_snippet(self, text: str, keywords: List[str]) -> str:
+        """Находит лучший фрагмент текста с ключевыми словами"""
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+
+        if not sentences:
+            return text[:300] + "..." if len(text) > 300 else text
+
+        # Оцениваем каждое предложение по количеству ключевых слов
+        scored_sentences = []
+        for sentence in sentences:
+            score = 0
+            for keyword in keywords:
+                if keyword.lower() in sentence.lower():
+                    score += 1
+
+            if score > 0:
+                scored_sentences.append((score, sentence))
+
+        if scored_sentences:
+            # Сортируем по количеству совпадений
+            scored_sentences.sort(key=lambda x: x[0], reverse=True)
+
+            # Берем лучшее предложение и контекст вокруг него
+            best_sentence = scored_sentences[0][1]
+
+            # Находим индекс этого предложения
+            for i, sent in enumerate(sentences):
+                if sent == best_sentence:
+                    start = max(0, i - 1)
+                    end = min(len(sentences), i + 2)
+                    return " ".join(sentences[start:end])
+
+        return text[:300] + "..." if len(text) > 300 else text
+
+    def verify_citation_with_source(self, citation_text: str, citation_context: str,
+                                    source_content: str, source_title: str) -> Dict[str, Any]:
+        """Проверяет, содержит ли источник данную цитату"""
+        if not source_content:
+            return {
+                'found': False,
+                'reason': 'Нет доступа к тексту источника',
+                'confidence': 0
+            }
+
+        # Очищаем текст цитаты
+        clean_citation = self._clean_citation_text(citation_text, citation_context)
+
+        # 1. Проверяем точное совпадение
+        if clean_citation in source_content:
+            return {
+                'found': True,
+                'confidence': 100,
+                'match_type': 'exact',
+                'position': source_content.find(clean_citation),
+                'matched_text': clean_citation[:200] + "..." if len(clean_citation) > 200 else clean_citation
+            }
+
+        # 2. Ищем похожие фразы
+        similar_matches = self._find_similar_phrases(clean_citation, source_content)
+
+        if similar_matches:
+            best_match = similar_matches[0]
+            return {
+                'found': True,
+                'confidence': min(best_match['similarity'] * 100, 95),
+                'match_type': 'similar',
+                'similar_matches': similar_matches[:3],
+                'best_match': best_match['text'][:200] + "..." if len(best_match['text']) > 200 else best_match['text']
+            }
+
+        # 3. Ищем по ключевым словам
+        keywords = self._extract_keywords(clean_citation)
+        keyword_matches = self._find_keyword_matches(keywords, source_content)
+
+        if keyword_matches:
+            return {
+                'found': True,
+                'confidence': min(keyword_matches['score'] * 100, 80),
+                'match_type': 'keywords',
+                'matched_keywords': keyword_matches['matched_keywords'],
+                'total_keywords': len(keywords)
+            }
+
+        return {
+            'found': False,
+            'confidence': 0,
+            'reason': 'Цитата не найдена в источнике'
+        }
+
+    def _clean_citation_text(self, text: str, context: str) -> str:
+        """Очищает текст цитаты для поиска"""
+        # Объединяем текст и контекст
+        full_text = f"{text or ''} {context or ''}".strip()
+
+        # Убираем номера цитат
+        full_text = re.sub(r'\[\d+\]', '', full_text)
+
+        # Убираем лишние пробелы
+        full_text = re.sub(r'\s+', ' ', full_text)
+
+        # Оставляем разумную длину
+        return full_text[:500]
+
+    def _find_similar_phrases(self, citation: str, source: str, min_length: int = 20) -> List[Dict]:
+        """Находит семантически похожие фразы в источнике"""
+        # Разбиваем на предложения
+        sentences = re.split(r'(?<=[.!?])\s+', citation)
+        matches = []
+
+        for sentence in sentences:
+            if len(sentence) < min_length:
+                continue
+
+            # Ищем похожие предложения в источнике
+            # (здесь можно использовать более сложную логику сравнения)
+            words = set(sentence.lower().split())
+
+            # Ищем в источнике предложения с общими словами
+            source_sentences = re.split(r'(?<=[.!?])\s+', source)
+
+            for source_sentence in source_sentences:
+                source_words = set(source_sentence.lower().split())
+                common_words = words.intersection(source_words)
+
+                if len(common_words) >= max(2, len(words) * 0.3):  # Хотя бы 30% общих слов
+                    similarity = len(common_words) / max(len(words), len(source_words))
+
+                    if similarity > 0.3:  # Порог схожести
+                        matches.append({
+                            'text': source_sentence,
+                            'similarity': similarity,
+                            'common_words': list(common_words)
+                        })
+
+        # Сортируем по схожести
+        matches.sort(key=lambda x: x['similarity'], reverse=True)
+        return matches
+
+    def verify_citation_semantically(self, citation_data: Dict[str, Any],
+                                     source_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Семантическая проверка цитаты в источнике.
+        Используется для верификации, что автор действительно использовал этот источник.
+        """
+        try:
+            logger.info(f"Семантическая проверка цитаты в источнике {source_data.get('id')}")
+
+            # Получаем полный текст цитаты с контекстом
+            citation_text = citation_data.get('full_paragraph', '') or citation_data.get('text', '')
+            citation_context = citation_data.get('context', '')
+
+            # Получаем текст источника
+            source_content = source_data.get('full_content', '')
+
+            if not source_content:
+                return {
+                    'success': False,
+                    'verified': False,
+                    'reason': 'Текст источника недоступен для семантического анализа',
+                    'confidence': 0
+                }
+
+            # Семантическая проверка
+            verification_result = self.semantic_matcher.verify_citation_in_source(
+                citation_data, source_data
+            )
+
+            # Форматируем результат
+            result = {
+                'success': True,
+                'verified': verification_result['verified'],
+                'confidence': verification_result['confidence'],
+                'verification_level': verification_result['verification_level'],
+                'best_match': verification_result.get('best_match'),
+                'analysis_details': verification_result.get('analysis_details'),
+                'source_info': {
+                    'id': source_data.get('id'),
+                    'title': source_data.get('title'),
+                    'authors': source_data.get('authors', []),
+                    'year': source_data.get('year')
+                }
+            }
+
+            if not verification_result['verified']:
+                result['reason'] = 'Семантически похожий текст не найден в источнике'
+
+            logger.info(f"Результат семантической проверки: "
+                        f"verified={result['verified']}, confidence={result['confidence']}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Ошибка при семантической проверке: {e}")
+            return {
+                'success': False,
+                'verified': False,
+                'reason': f'Ошибка анализа: {str(e)}',
+                'confidence': 0
+            }
+
+    async def verify_citation_content(self, user_id: str, citation_text: str,
+                                source_id: str) -> Dict[str, Any]:
+        """Улучшенная проверка соответствия цитаты содержанию источника"""
+        try:
+            # Получаем содержание источника
+            content_result = await self.library_service.get_source_content(user_id, source_id)
+            if not content_result['success'] or not content_result['content']:
+                return {
+                    "success": False,
+                    "message": "Содержание источника недоступно для проверки"
+                }
+
+            source = content_result['source']
+            source_content = content_result['content']
+
+            # Старая проверка (точные совпадения)
+            verification_result = self._check_content_matches(citation_text, source_content)
+
+            # Новая семантическая проверка
+            semantic_result = self.verify_citation_semantically(
+                {'text': citation_text},
+                {'full_content': source_content, **source}
+            )
+
+            # Объединяем результаты
+            combined_result = {
+                "success": True,
+                "citation_text": citation_text,
+                "source_id": source_id,
+                "exact_matches": verification_result,
+                "semantic_verification": semantic_result,
+                "combined_confidence": self._calculate_combined_confidence(
+                    verification_result, semantic_result
+                ),
+                "recommendation": self._generate_verification_recommendation(
+                    verification_result, semantic_result
+                )
+            }
+
+            return combined_result
+
+        except Exception as e:
+            logger.error(f"Error verifying citation content: {e}")
+            return {
+                "success": False,
+                "message": f"Ошибка при проверке содержания: {str(e)}"
+            }
+
+    def _calculate_combined_confidence(self, exact_matches: Dict,
+                                       semantic_result: Dict) -> float:
+        """Рассчитывает общую уверенность на основе точных и семантических совпадений"""
+        exact_confidence = exact_matches.get('confidence_score', 0)
+        semantic_confidence = semantic_result.get('confidence', 0)
+
+        # Весовые коэффициенты
+        exact_weight = 0.4 if exact_matches.get('exact_match') else 0.2
+        semantic_weight = 0.6
+
+        combined = (exact_confidence * exact_weight +
+                    semantic_confidence * semantic_weight)
+
+        return min(combined, 100)
+
+    def _generate_verification_recommendation(self, exact_matches: Dict,
+                                              semantic_result: Dict) -> str:
+        """Генерирует рекомендацию на основе результатов проверки"""
+        if exact_matches.get('exact_match'):
+            return "✅ Цитата точно найдена в источнике"
+
+        semantic_verified = semantic_result.get('verified', False)
+        semantic_confidence = semantic_result.get('confidence', 0)
+
+        if semantic_verified and semantic_confidence > 70:
+            return "✅ Цитата семантически соответствует источнику (высокая уверенность)"
+        elif semantic_verified and semantic_confidence > 50:
+            return "⚠️ Цитата частично соответствует источнику (средняя уверенность)"
+        elif semantic_confidence > 30:
+            return "⚠️ Возможно соответствие, требуется проверка"
+        else:
+            return "❌ Цитата, вероятно, не соответствует источнику"

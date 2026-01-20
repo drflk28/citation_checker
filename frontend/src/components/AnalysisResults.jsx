@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import '../css/AnalysisResult.css';
+import CitationSourceVerifier from './CitationSourceVerifier';
 
 const AnalysisResults = ({ document, onBack }) => {
   const [analysis, setAnalysis] = useState(null);
@@ -40,7 +41,7 @@ const AnalysisResults = ({ document, onBack }) => {
     return () => clearInterval(interval);
   }, [document?.id, analysis?.status]);
 
-  if (!document) {
+   if (!document) {
     return (
       <div className="card">
         <div className="error-state">
@@ -107,75 +108,86 @@ const AnalysisResults = ({ document, onBack }) => {
     );
   }
 
+  // ВОТ ИСПРАВЛЕННАЯ ЧАСТЬ:
   return (
-    <div className="card">
-      {/* Заголовок */}
-      <div className="card-header analysis-header">
-        <div className="analysis-title">
-          <button className="back-button" onClick={onBack}>
-            ← Назад к документам
-          </button>
-          <div>
-            <h2>{document.filename}</h2>
-            <p className="analysis-date">
-              Проанализирован {new Date().toLocaleDateString('ru-RU')}
-            </p>
+    <div className="analysis-container">
+      <div className="card">
+        {/* Заголовок */}
+        <div className="card-header analysis-header">
+          <div className="analysis-title">
+            <button className="back-button" onClick={onBack}>
+              ← Назад к документам
+            </button>
+            <div>
+              <h2>{document.filename}</h2>
+              <p className="analysis-date">
+                Проанализирован {new Date().toLocaleDateString('ru-RU')}
+              </p>
+            </div>
+          </div>
+          <div className="analysis-status">
+            <span className={`status-badge ${
+              analysis.issues_found === 0 ? 'status-success' : 'status-warning'
+            }`}>
+              {analysis.issues_found === 0 ? 'Нет проблем' : `${analysis.issues_found} проблем`}
+            </span>
           </div>
         </div>
-        <div className="analysis-status">
-          <span className={`status-badge ${
-            analysis.issues_found === 0 ? 'status-success' : 'status-warning'
-          }`}>
-            {analysis.issues_found === 0 ? 'Нет проблем' : `${analysis.issues_found} проблем`}
-          </span>
+
+        {/* Вкладки */}
+        <div className="tabs-container">
+          <nav className="tabs-nav">
+            {[
+              { key: 'summary', label: 'Обзор' },
+              { key: 'citations', label: 'Цитаты' },
+              { key: 'bibliography', label: 'Библиография' },
+              { key: 'issues', label: 'Проблемы' }
+            ].map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setSelectedTab(tab.key)}
+                className={`tab-button ${selectedTab === tab.key ? 'tab-active' : 'tab-inactive'}`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
         </div>
-      </div>
 
-      {/* Вкладки */}
-      <div className="tabs-container">
-        <nav className="tabs-nav">
-          {[
-            { key: 'summary', label: 'Обзор' },
-            { key: 'citations', label: 'Цитаты' },
-            { key: 'bibliography', label: 'Библиография' },
-            { key: 'issues', label: 'Проблемы' }
-          ].map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => setSelectedTab(tab.key)}
-              className={`tab-button ${selectedTab === tab.key ? 'tab-active' : 'tab-inactive'}`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </nav>
-      </div>
+        {/* Контент */}
+        <div className="tab-content">
+          {selectedTab === 'summary' && (
+            <SummaryTab analysis={analysis} onTabChange={setSelectedTab} />
+          )}
+          {selectedTab === 'citations' && <CitationsTab analysis={analysis} />}
+          {selectedTab === 'bibliography' && (
+            <BibliographyTab
+              analysis={analysis}
+              onEntrySelect={setSelectedEntry}
+            />
+          )}
+          {selectedTab === 'issues' && <IssuesTab analysis={analysis} />}
+        </div>
 
-      {/* Контент */}
-      <div className="tab-content">
-        {selectedTab === 'summary' && (
-          <SummaryTab analysis={analysis} onTabChange={setSelectedTab} />
-        )}
-        {selectedTab === 'citations' && <CitationsTab analysis={analysis} />}
-        {selectedTab === 'bibliography' && (
-          <BibliographyTab
-            analysis={analysis}
-            onEntrySelect={setSelectedEntry}
+        {/* Модальное окно с деталями источника */}
+        {selectedEntry && (
+          <SourceDetailsModal
+            entry={selectedEntry}
+            onClose={() => setSelectedEntry(null)}
           />
         )}
-        {selectedTab === 'issues' && <IssuesTab analysis={analysis} />}
-      </div>
+      </div> {/* Закрываем .card */}
 
-      {/* Модальное окно с деталями источника */}
-      {selectedEntry && (
-        <SourceDetailsModal
-          entry={selectedEntry}
-          onClose={() => setSelectedEntry(null)}
+      {/* НОВЫЙ КОМПОНЕНТ - ПРОВЕРКА СООТВЕТСТВИЯ ЦИТАТ ИСТОЧНИКАМ */}
+      <div className="citation-verifier-section">
+        <CitationSourceVerifier
+          documentId={document.id}
+          analysis={analysis}
         />
-      )}
+      </div>
     </div>
-  );
-};
+  ); // Закрываем return
+}; // Закрываем функцию AnalysisResults
 
 const SummaryTab = ({ analysis, onTabChange }) => {
   const entriesWithOnlineData = (analysis.bibliography_entries || [])
@@ -271,22 +283,38 @@ const CitationsTab = ({ analysis }) => (
       Найденные цитаты ({(analysis.citations || []).length})
     </h3>
     <div className="citations-list">
-      {(analysis.citations || []).map((citation, index) => (
-        <div
-          key={citation.id || index}
-          className="citation-item"
-        >
-          <div className="citation-content">
-            <div className="citation-main">
-              <p className="citation-text">{citation.text}</p>
-              <p className="citation-context">{citation.context}</p>
+      {(analysis.citations || []).map((citation, index) => {
+        // Фильтруем не-цифровые цитаты на фронтенде
+        if (!citation.citation_number) {
+          return null;
+        }
+
+        return (
+          <div
+            key={citation.id || index}
+            className="citation-item"
+          >
+            <div className="citation-content">
+              <div className="citation-main">
+                <div className="citation-header">
+                  <span className="citation-number">
+                    [{citation.citation_number}]
+                  </span>
+                  <span className="citation-page">
+                    Страница {citation.page || 1}
+                  </span>
+                </div>
+                <p className="citation-text">
+                  {citation.context || citation.full_paragraph || citation.text}
+                </p>
+              </div>
+              <span className="citation-style">
+                {citation.style || 'numeric'}
+              </span>
             </div>
-            <span className="citation-style">
-              {citation.style || 'Неизвестно'}
-            </span>
           </div>
-        </div>
-      ))}
+        );
+      })}
       {(analysis.citations || []).length === 0 && (
         <p className="empty-message">Цитаты не найдены</p>
       )}

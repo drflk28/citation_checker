@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import os
 import hashlib
+import logging
 from app.document_parser.universal_parser import UniversalDocumentParser
 from app.services.simple_source_processor import SimpleSourceProcessor
 
@@ -16,9 +17,9 @@ class LibraryService:
         self.data_dir = self.base_dir / "data" / "library"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.sources_file = self.data_dir / "bibliography_sources.json"
-        self.content_dir = self.data_dir / "contents"
+        self.content_dir = self.data_dir / "content"
         self.content_dir.mkdir(exist_ok=True)
-
+        self.logger = logging.getLogger(__name__)
         self.source_processor = SimpleSourceProcessor()  # Изменено здесь
 
         # Инициализируем sources (ранее называлось user_sources)
@@ -179,16 +180,17 @@ class LibraryService:
             print(f"Error saving source content: {e}")
 
     def _load_source_content(self, source_id: str) -> Optional[str]:
-        """Загружает полный текст источника"""
-        try:
-            content_file = self.content_dir / f"{source_id}.txt"
-            if content_file.exists():
-                with open(content_file, 'r', encoding='utf-8') as f:
+        """Загружает контент источника БЕЗ создания нового экземпляра"""
+        content_path = self.content_dir / f"{source_id}.txt"
+
+        if content_path.exists():
+            try:
+                with open(content_path, 'r', encoding='utf-8') as f:
                     return f.read()
-            return None
-        except Exception as e:
-            print(f"Error loading source content: {e}")
-            return None
+            except Exception as e:
+                logger.error(f"Error loading content for {source_id}: {e}")
+                return None
+        return None
 
     async def add_source(self, user_id: str, source_data: Dict[str, Any], content: str = None) -> Dict[str, Any]:
         """Добавляет источник в библиотеку с возможным содержанием"""
@@ -627,6 +629,35 @@ class LibraryService:
         except Exception as e:
             print(f"Error updating source last used: {e}")
             return False
+
+    async def get_source_content_with_fallback(self, user_id: str, source_id: str):
+        """Получает контент источника с отказоустойчивостью"""
+        try:
+            # Сначала проверяем кэш
+            cache_key = f"{user_id}:{source_id}:content"
+            if cache_key in self.content_cache:
+                return self.content_cache[cache_key]
+
+            # Загружаем из файла
+            content = self._load_source_content(source_id)
+            if content:
+                self.content_cache[cache_key] = content
+                return content
+
+            # Если файла нет, пытаемся извлечь из оригинального файла
+            source = await self.get_source_details(user_id, source_id)
+            if source["success"] and source["source"].get("file_path"):
+                content = await self.extract_text_from_file(Path(source["source"]["file_path"]))
+                if content:
+                    # Сохраняем для будущего использования
+                    await self.save_source_content(source_id, content)
+                    self.content_cache[cache_key] = content
+                    return content
+
+            return None
+        except Exception as e:
+            logger.error(f"Error getting source content: {e}")
+            return None
 
 # Глобальный экземпляр сервиса
 library_service = LibraryService()
