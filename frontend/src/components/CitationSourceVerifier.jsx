@@ -128,53 +128,99 @@ const CitationSourceVerifier = ({ documentId, analysis }) => {
     };
 
     const verifyCitationSourcePair = async (pair) => {
-        try {
-            const { citation, source, citation_number } = pair;
+    console.log(`🔍 Начинаем проверку пары: цитата [${pair.citation_number}]`);
 
-            // Получаем текст источника из библиотеки
-            let sourceContent = '';
-            let sourceTitle = '';
+    try {
+        const { citation, source, citation_number } = pair;
 
-            if (source.library_match?.source_id) {
-                // Источник найден в библиотеке
-                const response = await axios.get(
-                    `http://localhost:8001/api/library/sources/${source.library_match.source_id}/full-content`
-                );
+        // Получаем полный текст цитаты
+        const getCitationText = () => {
+            // Пробуем разные поля в порядке приоритета
+            const possibleFields = [
+                citation.context,
+                citation.full_paragraph,
+                citation.text
+            ];
 
-                if (response.data.success) {
-                    sourceContent = response.data.full_content;
-                    sourceTitle = response.data.title || 'Источник из библиотеки';
+            for (const field of possibleFields) {
+                if (field && field.trim() !== '' && !/^\[\d+\]$/.test(field.trim())) {
+                    return field;
                 }
-            } else if (source.online_metadata?.title) {
-                // Источник из онлайн-поиска
-                sourceTitle = source.online_metadata.title;
-                // Здесь можно было бы сделать запрос к онлайн-источнику
             }
 
-            // Проверяем, содержит ли источник эту цитату
-            const verificationResult = await checkCitationInSource(
-                citation.text,
-                citation.context,
-                sourceContent,
-                sourceTitle
-            );
+            return `[${citation_number}]`;
+        };
 
-            return {
-                citation_number: citation_number,
-                citation_text: citation.text,
-                source_title: sourceTitle || source.text?.substring(0, 100),
-                source_content: sourceContent,
-                verification: verificationResult,
-                has_source_content: sourceContent.length > 0
-            };
+        const full_citation_text = getCitationText();
+        console.log(`   📝 Текст цитаты: "${full_citation_text.substring(0, 100)}..."`);
 
-        } catch (error) {
-            console.error('Error verifying pair:', error);
-            return null;
+        // Получаем текст источника из библиотеки
+        let sourceContent = '';
+        let sourceTitle = '';
+        let sourceId = null;
+
+        console.log(`   🔍 Проверяем библиотечный источник:`, source.library_match);
+
+        // Пробуем найти источник в библиотеке
+        if (source.library_match?.source_id) {
+            sourceId = source.library_match.source_id;
+            console.log(`   📚 Источник найден в библиотеке: ${sourceId}`);
+
+            try {
+                const response = await axios.get(
+                    `http://localhost:8001/api/library/sources/${sourceId}/full-content`,
+                    { timeout: 10000 }
+                );
+
+                console.log(`   📡 Ответ API:`, response.status);
+
+                if (response.data.success) {
+                    sourceContent = response.data.full_content || '';
+                    sourceTitle = response.data.title || source.text?.substring(0, 100) || 'Источник из библиотеки';
+                    console.log(`   ✅ Получен контент длиной: ${sourceContent.length}`);
+                } else {
+                    console.log(`   ❌ API вернул ошибку:`, response.data.message);
+                }
+            } catch (apiError) {
+                console.error(`   ❌ Ошибка API запроса:`, apiError.message);
+            }
         }
-    };
+        // Если нет library_match, проверяем online_metadata
+        else if (source.online_metadata?.title) {
+            sourceTitle = source.online_metadata.title;
+            console.log(`   🌐 Используем онлайн источник: ${sourceTitle}`);
+        }
+        // Если ничего нет, используем текст из библиографии
+        else {
+            sourceTitle = source.text?.substring(0, 100) || 'Неизвестный источник';
+            console.log(`   📄 Используем текст из библиографии: ${sourceTitle}`);
+        }
 
-    const checkCitationInSource = async (citationText, context, sourceContent, sourceTitle) => {
+        // Проверяем, содержит ли источник эту цитату
+        // ИСПРАВЛЕНО: передаем full_citation_text вместо citation.context
+        const verificationResult = await checkCitationInSource(
+            full_citation_text,  // ← было citation.context, теперь full_citation_text
+            sourceContent,
+            sourceTitle
+        );
+
+        return {
+            citation_number: citation_number,
+            citation_text: full_citation_text,
+            source_title: sourceTitle,
+            source_content: sourceContent,
+            source_id: sourceId,
+            verification: verificationResult,
+            has_source_content: sourceContent.length > 0
+        };
+
+    } catch (error) {
+        console.error(`❌ Ошибка в verifyCitationSourcePair:`, error);
+        return null;
+    }
+};
+
+    const checkCitationInSource = async (citationText, sourceContent, sourceTitle) => {
     if (!sourceContent) {
         return {
             found: false,
@@ -183,25 +229,74 @@ const CitationSourceVerifier = ({ documentId, analysis }) => {
         };
     }
 
-    // 1. Извлекаем ключевые слова из контекста цитаты
-    const keywords = extractKeywordsFromContext(context);
-
-    // 2. Ищем ключевые слова в источнике
-    const keywordMatches = findKeywordMatches(keywords, sourceContent);
-
-    if (keywordMatches.length === 0) {
+    // Проверяем входные данные
+    if (!citationText || typeof citationText !== 'string') {
+        console.error('checkCitationInSource: citationText is invalid', citationText);
         return {
             found: false,
-            reason: 'Ключевые слова цитаты не найдены в источнике',
+            reason: 'Некорректный текст цитаты',
             confidence: 0
         };
     }
 
-    // 3. Оцениваем уверенность на основе количества совпадений
+    if (!sourceTitle || typeof sourceTitle !== 'string') {
+        sourceTitle = ''; // Если нет названия, используем пустую строку
+    }
+
+    // 1. Извлекаем ключевые слова из текста цитаты
+    const keywords = extractKeywordsFromContext(citationText); // ← используем citationText вместо context
+
+    // 2. Создаем копию контента без названия для поиска
+    let searchableContent = sourceContent;
+
+    // Удаляем название из поиска, если оно есть в начале текста
+    if (sourceTitle && typeof sourceTitle === 'string') {
+        const titleWords = sourceTitle.split(' ').filter(w => w && w.length > 3);
+        titleWords.forEach(word => {
+            if (word && typeof word === 'string') {
+                // Заменяем слова из названия на пустоту, чтобы они не учитывались
+                try {
+                    const regex = new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+                    searchableContent = searchableContent.replace(regex, '');
+                } catch (e) {
+                    console.error('Error creating regex for word:', word, e);
+                }
+            }
+        });
+    }
+
+    // 3. Ищем ключевые слова в источнике
+    const keywordMatches = findKeywordMatches(keywords, searchableContent);
+
+    if (keywordMatches.length === 0) {
+        // Если в основном тексте не найдено, проверяем исключая стоп-слова
+        const importantKeywords = keywords.filter(k =>
+            !['бизнес', 'планирование', 'учебник', 'вузов', 'лопарева'].includes(k)
+        );
+
+        if (importantKeywords.length > 0) {
+            const importantMatches = findKeywordMatches(importantKeywords, searchableContent);
+            if (importantMatches.length === 0) {
+                return {
+                    found: false,
+                    reason: 'Ключевые слова цитаты не найдены в основном тексте источника',
+                    confidence: 0
+                };
+            }
+        } else {
+            return {
+                found: false,
+                reason: 'Ключевые слова цитаты не найдены в источнике',
+                confidence: 0
+            };
+        }
+    }
+
+    // 4. Оцениваем уверенность на основе количества совпадений
     const confidence = calculateConfidence(keywordMatches.length, keywords.length);
 
-    // 4. Находим лучший фрагмент текста
-    const bestSnippet = findBestSnippet(sourceContent, keywordMatches);
+    // 5. Находим лучший фрагмент текста (исключая название)
+    const bestSnippet = findBestSnippet(searchableContent, keywordMatches);
 
     return {
         found: true,
@@ -214,8 +309,11 @@ const CitationSourceVerifier = ({ documentId, analysis }) => {
     };
 };
 
-    const extractKeywordsFromContext = (context) => {
-    if (!context) return [];
+    const extractKeywordsFromContext = (text) => {
+    if (!text || typeof text !== 'string') {
+        console.warn('extractKeywordsFromContext: text is invalid', text);
+        return [];
+    }
 
     // Убираем стоп-слова
     const stopWords = new Set([
@@ -225,7 +323,7 @@ const CitationSourceVerifier = ({ documentId, analysis }) => {
     ]);
 
     // Извлекаем слова длиной > 3 символов
-    const words = context.toLowerCase().match(/[а-яё]{4,}/g) || [];
+    const words = text.toLowerCase().match(/[а-яё]{4,}/g) || [];
 
     // Фильтруем стоп-слова
     const keywords = words.filter(word => !stopWords.has(word));
@@ -233,7 +331,6 @@ const CitationSourceVerifier = ({ documentId, analysis }) => {
     // Убираем дубликаты
     return [...new Set(keywords)].slice(0, 10); // Берем до 10 ключевых слов
 };
-
     const findKeywordMatches = (keywords, sourceContent) => {
         const sourceLower = sourceContent.toLowerCase();
         const matches = [];
@@ -338,7 +435,7 @@ const findBestSnippet = (sourceContent, keywordMatches) => {
     };
 
     const renderVerificationResult = (result, index) => {
-    const { verification, citation_text, source_title, has_source_content } = result;
+    const { verification, citation_text, source_title, has_source_content, source_content } = result;
 
     return (
         <div key={index} className={`verification-result ${verification.found ? 'result-verified' : 'result-not-found'}`}>
@@ -373,7 +470,25 @@ const findBestSnippet = (sourceContent, keywordMatches) => {
                     <div className="semantic-match">
                         <strong>Релевантный фрагмент источника:</strong>
                         <div className="source-snippet">
-                            {verification.best_snippet}
+                            {/* ИСПРАВЛЕНО: используем реальный текст источника */}
+                            {verification.found && verification.best_snippet && verification.best_snippet !== source_title ? (
+                                // Если есть найденный фрагмент и он не равен названию
+                                verification.best_snippet
+                            ) : (
+                                // Если нет фрагмента или это название, показываем первые 500 символов источника
+                                source_content ? (
+                                    <div className="source-content-preview">
+                                        {source_content.substring(0, 500)}...
+                                        <div className="preview-note">
+                                            <small>⚠️ Показано начало текста источника</small>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="no-content">
+                                        Текст источника отсутствует
+                                    </div>
+                                )
+                            )}
                         </div>
                     </div>
 

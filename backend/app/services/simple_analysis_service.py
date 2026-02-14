@@ -442,60 +442,50 @@ class SimpleAnalysisService:
                 citation_text = f"[{citation_num}]"  # По умолчанию
                 context_text = ""
 
-                if full_paragraph:
+                if full_paragraph and len(full_paragraph.strip()) > 5:  # Минимум 5 символов
                     # Ищем цитату в тексте
                     citation_marker = f"[{citation_num}]"
-                    if citation_marker in full_paragraph:
-                        # Находим позицию цитаты
-                        pos = full_paragraph.find(citation_marker)
 
-                        # 1. Находим начало предложения (для citation.text)
-                        sentence_start = pos
-                        for j in range(pos - 1, max(-1, pos - 300), -1):
-                            if j < 0:
-                                sentence_start = 0
-                                break
-                            if full_paragraph[j] in '.!?':
-                                sentence_start = j + 1
-                                # Пропускаем пробелы
-                                while sentence_start < len(full_paragraph) and full_paragraph[
-                                    sentence_start] in ' \t\n':
-                                    sentence_start += 1
-                                break
+                    # Пробуем найти предложение с цитатой
+                    sentences = re.split(r'(?<=[.!?])\s+', full_paragraph)
 
-                        # 2. Находим конец предложения
-                        sentence_end = pos + len(citation_marker)
-                        for j in range(sentence_end, min(len(full_paragraph), sentence_end + 300)):
-                            if full_paragraph[j] in '.!?':
-                                sentence_end = j + 1
-                                # Включаем закрывающие кавычки
-                                while sentence_end < len(full_paragraph) and full_paragraph[sentence_end] in '"»\u201d':
-                                    sentence_end += 1
-                                break
+                    for sentence in sentences:
+                        if citation_marker in sentence:
+                            # Очищаем предложение
+                            clean_sentence = sentence.strip()
 
-                        # 3. Извлекаем полное предложение с цитатой
-                        full_sentence = full_paragraph[sentence_start:sentence_end].strip()
+                            # Если слишком длинное, обрезаем
+                            if len(clean_sentence) > 300:
+                                # Находим позицию цитаты
+                                pos = clean_sentence.find(citation_marker)
+                                start = max(0, pos - 150)
+                                end = min(len(clean_sentence), pos + len(citation_marker) + 150)
+                                clean_sentence = clean_sentence[start:end]
+                                if start > 0:
+                                    clean_sentence = '...' + clean_sentence
+                                if end < len(sentence):
+                                    clean_sentence = clean_sentence + '...'
 
-                        if full_sentence:
-                            citation_text = full_sentence
-                            print(f"   Цитата [{citation_num}]: {full_sentence[:80]}...")
-
-                        # 4. Создаем расширенный контекст (для citation.context)
-                        # Берем 100 символов до и после цитаты
-                        context_start = max(0, pos - 100)
-                        context_end = min(len(full_paragraph), pos + len(citation_marker) + 100)
-                        context_text = full_paragraph[context_start:context_end]
-
-                        # Добавляем многоточия если обрезали
-                        if context_start > 0:
-                            context_text = "..." + context_text
-                        if context_end < len(full_paragraph):
-                            context_text = context_text + "..."
-
+                            citation_text = clean_sentence
+                            context_text = full_paragraph[:500] + '...' if len(full_paragraph) > 500 else full_paragraph
+                            break
                     else:
-                        # Если не нашли цитату в тексте, берем начало абзаца
-                        citation_text = full_paragraph[:150] + "..." if len(full_paragraph) > 150 else full_paragraph
-                        context_text = full_paragraph
+                        # Если не нашли цитату в конкретном предложении, берем начало абзаца
+                        if len(full_paragraph) > 100:
+                            citation_text = full_paragraph[:150] + '...'
+                            context_text = full_paragraph
+                        else:
+                            citation_text = full_paragraph
+                            context_text = full_paragraph
+                else:
+                    # Если нет полного абзаца, используем контекст из detail
+                    contexts = detail.get('contexts', [])
+                    if contexts and len(contexts) > 0:
+                        context_text = contexts[0]
+                        # Извлекаем предложение из контекста
+                        sentences = re.split(r'(?<=[.!?])\s+', context_text)
+                        if sentences:
+                            citation_text = sentences[0][:200] + '...' if len(sentences[0]) > 200 else sentences[0]
 
                 # ====== Формируем объект цитаты для фронтенда ======
                 citations.append({
@@ -507,6 +497,8 @@ class SimpleAnalysisService:
                     'style': 'numeric',
                     'citation_number': int(citation_num)
                 })
+
+                print(f"   Цитата [{citation_num}]: '{citation_text[:80]}...'")
 
         print(f"✅ Сформировано {len(citations)} валидных цитат")
 

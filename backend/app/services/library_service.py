@@ -11,22 +11,27 @@ import logging
 from app.document_parser.universal_parser import UniversalDocumentParser
 from app.services.simple_source_processor import SimpleSourceProcessor
 
+
 class LibraryService:
     def __init__(self):
         self.base_dir = Path(__file__).parent.parent.parent
         self.data_dir = self.base_dir / "data" / "library"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.sources_file = self.data_dir / "bibliography_sources.json"
-        self.content_dir = self.data_dir / "content"
-        self.content_dir.mkdir(exist_ok=True)
+
+        # ⭐ ВАЖНО: content_dir, а не contents_dir
+        self.content_dir = self.data_dir / "contents"
+        self.content_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"📁 LibraryService инициализирован")
+        print(f"📁 Data dir: {self.data_dir}")
+        print(f"📁 Content dir: {self.content_dir}")
+        print(f"📁 Content dir exists: {self.content_dir.exists()}")
+
         self.logger = logging.getLogger(__name__)
-        self.source_processor = SimpleSourceProcessor()  # Изменено здесь
-
-        # Инициализируем sources (ранее называлось user_sources)
+        self.source_processor = SimpleSourceProcessor()
         self.sources = self._load_sources()
-
-        print(f"LibraryService initialized. Data dir: {self.data_dir}")
-        print(f"Total users: {len(self.sources)}")
+        self.content_cache = {}  # Кэш для быстрого доступа
 
     async def add_source_from_file(self, user_id: str, file) -> Dict[str, Any]:
         """Добавляет источник из загруженного файла"""
@@ -170,27 +175,77 @@ class LibraryService:
     def _save_source_content(self, source_id: str, content: str):
         """Сохраняет полный текст источника"""
         try:
-            self.content_dir.mkdir(exist_ok=True)
+            self.content_dir.mkdir(parents=True, exist_ok=True)
 
             content_file = self.content_dir / f"{source_id}.txt"
             with open(content_file, 'w', encoding='utf-8') as f:
                 f.write(content)
-            print(f"Content saved for source {source_id}: {len(content)} chars")
+
+            print(f"   💾 Контент сохранен для источника {source_id}: {len(content)} символов")
+            print(f"   📁 Путь: {content_file}")
+
+            # Обновляем кэш
+            self.content_cache[source_id] = content
+
+            # Обновляем запись источника
+            self._update_source_has_content(source_id, True)
+
         except Exception as e:
-            print(f"Error saving source content: {e}")
+            print(f"   ❌ Ошибка сохранения контента: {e}")
+
+    def _update_source_has_content(self, source_id: str, has_content: bool):
+        """Обновляет флаг has_content в источнике"""
+        for user_id, sources in self.sources.items():
+            for source in sources:
+                if source['id'] == source_id:
+                    source['has_content'] = has_content
+                    if has_content:
+                        source['text_length'] = len(self.content_cache.get(source_id, ''))
+                    self._save_sources()
+                    print(f"   🔄 Обновлен флаг has_content для {source_id}: {has_content}")
+                    return
 
     def _load_source_content(self, source_id: str) -> Optional[str]:
-        """Загружает контент источника БЕЗ создания нового экземпляра"""
+        """Загружает контент источника"""
+        # Сначала проверяем кэш
+        if source_id in self.content_cache:
+            print(f"   🔄 Используем кэшированный контент для {source_id}")
+            return self.content_cache[source_id]
+
         content_path = self.content_dir / f"{source_id}.txt"
+
+        print(f"   📄 Загружаем контент из: {content_path}")
+        print(f"   📄 Файл существует: {content_path.exists()}")
 
         if content_path.exists():
             try:
                 with open(content_path, 'r', encoding='utf-8') as f:
-                    return f.read()
+                    content = f.read()
+                    print(f"   ✅ Загружено {len(content)} символов для источника {source_id}")
+                    # Кэшируем
+                    self.content_cache[source_id] = content
+                    return content
             except Exception as e:
-                logger.error(f"Error loading content for {source_id}: {e}")
+                print(f"   ❌ Ошибка загрузки контента для {source_id}: {e}")
                 return None
-        return None
+        else:
+            print(f"   ❌ Файл контента не найден: {content_path}")
+
+            # Пробуем найти файл в другой папке (старая структура)
+            old_path = self.data_dir / "content" / f"{source_id}.txt"
+            if old_path.exists():
+                print(f"   🔍 Найден в старой структуре: {old_path}")
+                try:
+                    with open(old_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        # Копируем в новую структуру
+                        self._save_source_content(source_id, content)
+                        self.content_cache[source_id] = content
+                        return content
+                except Exception as e:
+                    print(f"   ❌ Ошибка загрузки из старой структуры: {e}")
+
+            return None
 
     async def add_source(self, user_id: str, source_data: Dict[str, Any], content: str = None) -> Dict[str, Any]:
         """Добавляет источник в библиотеку с возможным содержанием"""
@@ -379,36 +434,45 @@ class LibraryService:
             source = next((s for s in user_sources if s['id'] == source_id), None)
 
             if not source:
+                print(f"   ❌ Источник {source_id} не найден для пользователя {user_id}")
                 return {
                     "success": False,
                     "message": "Источник не найден"
                 }
 
+            print(f"   🔍 Загружаем детали для источника: {source_id}")
+            print(f"   📖 Название: {source.get('title', 'Без названия')}")
+
             # Загружаем полное содержание
             full_content = self._load_source_content(source_id)
 
-            print(f"DEBUG: Loading content for source {source_id}")
-            print(f"DEBUG: Content exists: {full_content is not None}")
-            print(f"DEBUG: Content length: {len(full_content) if full_content else 0}")
-
             if full_content:
-                print(f"DEBUG: First 200 chars: {full_content[:200]}")
-            else:
-                print(f"DEBUG: No content found for source {source_id}")
+                print(f"   ✅ Контент загружен: {len(full_content)} символов")
+                print(f"   📝 Превью: {full_content[:200]}...")
 
-                # Попробуем извлечь текст из файла заново, если его нет
+                # Обновляем запись
+                source['has_content'] = True
+                source['text_length'] = len(full_content)
+                source['content_preview'] = full_content[:500] + '...' if len(full_content) > 500 else full_content
+            else:
+                print(f"   ⚠️ Контент не найден для источника {source_id}")
+
+                # Пробуем извлечь текст из файла если есть
                 if source.get('file_path') and os.path.exists(source['file_path']):
-                    print(f"DEBUG: Attempting to re-extract text from file: {source['file_path']}")
+                    print(f"   🔍 Пробуем извлечь текст из файла: {source['file_path']}")
                     try:
                         from app.services.simple_source_processor import SimpleSourceProcessor
                         processor = SimpleSourceProcessor()
                         reextracted_text = await processor.extract_text_from_file(Path(source['file_path']))
-                        if reextracted_text.strip():
+
+                        if reextracted_text and reextracted_text.strip():
+                            print(f"   ✅ Извлечен текст: {len(reextracted_text)} символов")
                             self._save_source_content(source_id, reextracted_text)
                             full_content = reextracted_text
-                            print(f"DEBUG: Re-extracted {len(reextracted_text)} characters")
+                        else:
+                            print(f"   ❌ Не удалось извлечь текст из файла")
                     except Exception as e:
-                        print(f"DEBUG: Failed to re-extract text: {e}")
+                        print(f"   ❌ Ошибка извлечения текста: {e}")
 
             return {
                 "success": True,
@@ -420,10 +484,81 @@ class LibraryService:
                 }
             }
         except Exception as e:
-            print(f"Error getting source details: {e}")
+            print(f"   ❌ Ошибка получения деталей источника: {e}")
             return {
                 "success": False,
                 "message": f"Ошибка при получении информации об источнике: {str(e)}"
+            }
+
+    async def update_source(self, user_id: str, source_id: str, update_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Обновляет метаданные источника (НЕ трогает текстовый файл)"""
+        try:
+            print(f"Updating source {source_id} for user {user_id}")
+            print(f"Update data: {update_data}")
+
+            if user_id not in self.sources:
+                return {
+                    "success": False,
+                    "message": "Библиотека пользователя не найдена"
+                }
+
+            # Ищем источник
+            source_index = -1
+            source_to_update = None
+
+            for i, source in enumerate(self.sources[user_id]):
+                if source['id'] == source_id:
+                    source_index = i
+                    source_to_update = source
+                    break
+
+            if source_index == -1:
+                return {
+                    "success": False,
+                    "message": "Источник не найден"
+                }
+
+            # Обновляем поля
+            allowed_fields = ['title', 'authors', 'year', 'source_type',
+                              'publisher', 'journal', 'url', 'doi', 'isbn',
+                              'custom_citation', 'tags']
+
+            for field in allowed_fields:
+                if field in update_data:
+                    if field == 'authors' and isinstance(update_data[field], str):
+                        # Преобразуем строку авторов в список
+                        authors_str = update_data[field]
+                        authors_list = [author.strip() for author in
+                                        re.split(r'[,;\n]', authors_str) if author.strip()]
+                        source_to_update[field] = authors_list
+                    else:
+                        source_to_update[field] = update_data[field]
+
+            # Обновляем время изменения
+            source_to_update['updated_at'] = datetime.now().isoformat()
+
+            # ВАЖНО: НЕ обновляем текстовый файл!
+            # Текстовый файл содержит только реальное содержание источника
+            # Метаданные хранятся отдельно в JSON
+
+            # Сохраняем только метаданные в JSON
+            self._save_sources()
+
+            print(f"Source {source_id} updated successfully (metadata only)")
+
+            return {
+                "success": True,
+                "message": "Метаданные источника успешно обновлены",
+                "source": source_to_update
+            }
+
+        except Exception as e:
+            print(f"Error updating source: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "message": f"Ошибка при обновлении источника: {str(e)}"
             }
 
     async def _extract_content_from_file(self, file_path: str) -> Optional[str]:

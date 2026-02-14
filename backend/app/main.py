@@ -14,6 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../app'))
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from fastapi import WebSocket
+from typing import Dict
 
 from .auth.dependencies import get_current_user, get_current_user_optional
 from .services.library_service import library_service
@@ -30,6 +32,8 @@ from pydantic import BaseModel
 # логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+active_connections: Dict[str, WebSocket] = {}
 
 def check_dependencies():
     """Проверка всех зависимостей при запуске приложения"""
@@ -162,49 +166,171 @@ async def root():
 
 @app.put("/api/library/sources/{source_id}")
 async def update_source(source_id: str, update_data: dict):
-    """Обновляет информацию об источнике"""
+    """Обновляет информацию об источнике с поддержкой всех полей"""
     try:
         user_id = "demo_user"
 
-        # Получаем текущий источник
-        result = await library_service.get_source_details(user_id, source_id)
-        if not result["success"]:
+        # Логируем запрос
+        print(f"UPDATE SOURCE: ID={source_id}, Data: {update_data}")
+
+        # Проверяем, существует ли источник
+        if user_id not in library_service.sources:
+            raise HTTPException(status_code=404, detail="Библиотека пользователя не найдена")
+
+        # Ищем источник
+        source_found = False
+        source_index = -1
+
+        for i, source in enumerate(library_service.sources[user_id]):
+            if source['id'] == source_id:
+                source_found = True
+                source_index = i
+                break
+
+        if not source_found:
             raise HTTPException(status_code=404, detail="Источник не найден")
 
-        source = result["source"]
+        # Подготавливаем обновленные данные
+        source_to_update = library_service.sources[user_id][source_index].copy()
 
-        # Обновляем только разрешенные поля
+        # Поля, которые можно обновлять
         allowed_fields = ['title', 'authors', 'year', 'source_type',
                           'journal', 'publisher', 'url', 'doi', 'isbn',
                           'custom_citation', 'tags']
 
-        updated = False
-        for field in allowed_fields:
+        # Обрабатываем поля по отдельности
+        if 'title' in update_data:
+            source_to_update['title'] = update_data['title']
+
+        if 'authors' in update_data:
+            # Обрабатываем авторов - преобразуем строку в список при необходимости
+            authors_value = update_data['authors']
+            if isinstance(authors_value, str):
+                # Разделяем строку на список авторов
+                authors_list = [author.strip() for author in authors_value.split(',') if author.strip()]
+                source_to_update['authors'] = authors_list
+            elif isinstance(authors_value, list):
+                source_to_update['authors'] = authors_value
+            else:
+                source_to_update['authors'] = []
+
+        if 'year' in update_data:
+            year_value = update_data['year']
+            if year_value and str(year_value).isdigit():
+                source_to_update['year'] = int(year_value)
+            else:
+                source_to_update['year'] = None
+
+        # Остальные поля
+        for field in ['source_type', 'journal', 'publisher', 'url', 'doi', 'isbn', 'custom_citation']:
             if field in update_data:
-                source[field] = update_data[field]
-                updated = True
+                source_to_update[field] = update_data[field] or ''
 
-        if updated:
-            # Сохраняем обновления
-            if user_id in library_service.sources:
-                for i, s in enumerate(library_service.sources[user_id]):
-                    if s['id'] == source_id:
-                        library_service.sources[user_id][i] = source
-                        break
+        if 'tags' in update_data:
+            tags_value = update_data['tags']
+            if isinstance(tags_value, str):
+                tags_list = [tag.strip() for tag in tags_value.split(',') if tag.strip()]
+                source_to_update['tags'] = tags_list
+            elif isinstance(tags_value, list):
+                source_to_update['tags'] = tags_value
+            else:
+                source_to_update['tags'] = []
 
-                library_service._save_sources()
+        # Добавляем время обновления
+        source_to_update['updated_at'] = datetime.now().isoformat()
+
+        # Сохраняем обновление
+        library_service.sources[user_id][source_index] = source_to_update
+        library_service._save_sources()
+
+        # Обновляем кэш контента если нужно
+        if 'content' in update_data and update_data['content']:
+            library_service._save_source_content(source_id, update_data['content'])
+
+        print(f"✅ Источник обновлен: {source_id}")
+        print(f"   Новый заголовок: {source_to_update.get('title')}")
+        print(f"   Авторы: {source_to_update.get('authors')}")
 
         return {
             "success": True,
             "message": "Источник успешно обновлен",
-            "source": source
+            "source": source_to_update
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error updating source: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ Ошибка при обновлении источника: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Ошибка при обновлении источника: {str(e)}")
 
+@app.get("/api/library/last-uploaded")
+async def get_last_uploaded_source():
+    """Получает последний загруженный источник"""
+    try:
+        user_id = "demo_user"
+        user_sources = library_service.sources.get(user_id, [])
 
+        if not user_sources:
+            return {
+                "success": False,
+                "message": "Библиотека пуста"
+            }
+
+        # Сортируем по дате создания (новые первые)
+        sorted_sources = sorted(user_sources,
+                               key=lambda x: x.get('created_at', ''),
+                               reverse=True)
+
+        # Берем последний источник
+        last_source = sorted_sources[0] if sorted_sources else None
+
+        return {
+            "success": True,
+            "source": last_source
+        }
+    except Exception as e:
+        logger.error(f"Error getting last uploaded source: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@app.get("/api/library/recent-sources")
+async def get_recent_sources(limit: int = 5):
+    """Получает последние N загруженных источников"""
+    try:
+        user_id = "demo_user"
+        user_sources = library_service.sources.get(user_id, [])
+
+        if not user_sources:
+            return {
+                "success": True,
+                "sources": [],
+                "count": 0
+            }
+
+        # Сортируем по дате создания (новые первые)
+        sorted_sources = sorted(user_sources,
+                               key=lambda x: x.get('created_at', ''),
+                               reverse=True)
+
+        # Берем N последних источников
+        recent_sources = sorted_sources[:limit]
+
+        return {
+            "success": True,
+            "sources": recent_sources,
+            "count": len(recent_sources),
+            "total_sources": len(user_sources)
+        }
+    except Exception as e:
+        logger.error(f"Error getting recent sources: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 @app.post("/api/library/sources/check-duplicate")
 async def check_duplicate_source(check_data: dict):
     """Проверяет, есть ли уже такой источник в библиотеке"""
@@ -612,7 +738,22 @@ async def upload_source_file(file: UploadFile = File(...)):
         if not result.get("success"):
             raise HTTPException(status_code=400, detail=result.get("message", "Upload failed"))
 
+        # Отправляем уведомление о новом источнике (если WebSocket настроен)
+        try:
+            # Получаем полную информацию о новом источнике
+            source_info = await library_service.get_source_details(user_id, result["source_id"])
+            if source_info["success"]:
+                # Рассылаем обновление всем клиентам
+                await broadcast_library_update("source_added", {
+                    "source_id": result["source_id"],
+                    "source": source_info["source"],
+                    "user_id": user_id
+                })
+        except Exception as ws_error:
+            print(f"WebSocket notification error: {ws_error}")
+
         return result
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1068,6 +1209,77 @@ async def get_semantic_status(doc_id: str):
     except Exception as e:
         logger.error(f"Error getting semantic status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/library/sources/{source_id}/add-content")
+async def add_source_content(source_id: str, content_data: dict):
+    """Добавляет или обновляет контент источника"""
+    try:
+        user_id = "demo_user"
+        content = content_data.get('content', '')
+
+        if not content.strip():
+            raise HTTPException(status_code=400, detail="Контент не может быть пустым")
+
+        # Сохраняем контент
+        library_service._save_source_content(source_id, content)
+
+        return {
+            "success": True,
+            "message": "Контент успешно добавлен к источнику",
+            "source_id": source_id,
+            "content_length": len(content)
+        }
+    except Exception as e:
+        logger.error(f"Error adding source content: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.websocket("/ws/library-updates")
+async def websocket_library_updates(websocket: WebSocket):
+    """WebSocket для обновлений библиотеки в реальном времени"""
+    await websocket.accept()
+    connection_id = str(uuid.uuid4())
+    active_connections[connection_id] = websocket
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            # Обработка сообщений от клиента
+            message_type = data.get("type")
+
+            if message_type == "subscribe":
+                user_id = data.get("user_id", "demo_user")
+                # Подписываем на обновления
+                await websocket.send_json({
+                    "type": "subscribed",
+                    "user_id": user_id
+                })
+            elif message_type == "ping":
+                await websocket.send_json({"type": "pong"})
+
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+    finally:
+        # Удаляем соединение при закрытии
+        if connection_id in active_connections:
+            del active_connections[connection_id]
+
+
+async def broadcast_library_update(event_type: str, data: dict):
+    """Отправляет обновление всем подключенным клиентам"""
+    message = {
+        "type": event_type,
+        "data": data,
+        "timestamp": datetime.now().isoformat()
+    }
+
+    for connection_id, websocket in list(active_connections.items()):
+        try:
+            await websocket.send_json(message)
+        except Exception as e:
+            print(f"Failed to send to {connection_id}: {e}")
+            # Удаляем нерабочее соединение
+            del active_connections[connection_id]
 @app.get("/")
 async def root():
     return {"message": "Citation Checker API"}
