@@ -154,12 +154,31 @@ class SimpleAnalysisService:
             print("🔍 Шаг 4: Создаем библиографические записи...")
             bibliography_entries = self._create_bibliography_entries(bibliography_blocks)
 
-            # 5. Пропускаем онлайн-поиск для скорости (раскомментируйте если нужно)
-            print("🔍 Шаг 5: Улучшаем записи...")
+            print("🔍 Шаг 5: Поиск в локальной библиотеке...")
             try:
-                enhanced_entries = self.bibliography_checker.enhance_with_online_search(
-                    [BibliographyEntry(**entry) for entry in bibliography_entries]
-                )
+                enhanced_entries = []
+
+                for entry in bibliography_entries:
+                    # Создаем объект записи
+                    bib_entry = BibliographyEntry(**entry)
+
+                    # ВАЖНО: Вызываем поиск в библиотеке!
+                    print(f"\n  🔎 Ищем в библиотеке для: {entry['text'][:100]}...")
+
+                    library_match = self.bibliography_checker._search_in_library(
+                        entry['text'],
+                        [entry['text']]  # поисковый запрос
+                    )
+
+                    if library_match:
+                        print(f"  ✅ Найдено совпадение!")
+                        bib_entry.library_match = library_match
+                        bib_entry.is_verified = True
+                        bib_entry.enhancement_confidence = library_match.get('match_score', 0) / 100
+                    else:
+                        print(f"  ❌ Совпадений не найдено")
+
+                    enhanced_entries.append(bib_entry)
 
                 # Конвертируем обратно в словари
                 bibliography_entries = []
@@ -178,10 +197,13 @@ class SimpleAnalysisService:
                     }
                     bibliography_entries.append(entry_dict)
 
-                print(f"✅ Улучшено записей: {len(bibliography_entries)}")
+                matched_count = sum(1 for e in bibliography_entries if e.get('library_match'))
+                print(f"\n✅ Поиск завершен. Найдено совпадений: {matched_count} из {len(bibliography_entries)}")
+
             except Exception as e:
-                print(f"⚠️ Ошибка улучшения записей (продолжаем без улучшения): {e}")
-                # Продолжаем с оригинальными записями
+                print(f"⚠️ Ошибка при поиске в библиотеке: {e}")
+                import traceback
+                traceback.print_exc()
 
             # 6. Проверка соответствия
             print("🔍 Шаг 6: Проверяем соответствие цитат и библиографии...")
@@ -269,13 +291,13 @@ class SimpleAnalysisService:
             self.analysis_results[doc_id] = error_result
             return error_result
 
-    def _verify_citation_against_source(self, citation: Dict, source: Dict) -> Dict[str, Any]:
-        """Проверяет цитату против конкретного источника"""
+    async def _verify_citation_against_source_async(self, citation: Dict, source: Dict) -> Dict[str, Any]:
+        """Асинхронная проверка цитаты против конкретного источника"""
         try:
-            # Получаем полный текст источника
-            source_content = library_service._load_source_content(source['id'])
+            # Получаем полный текст источника через правильный метод
+            content_result = await library_service.get_source_content("demo_user", source['id'])
 
-            if not source_content:
+            if not content_result['success'] or not content_result['content']:
                 return {
                     'verified': False,
                     'confidence': 0,
@@ -283,6 +305,8 @@ class SimpleAnalysisService:
                     'source_title': source.get('title', 'Unknown'),
                     'reason': 'Текст источника недоступен'
                 }
+
+            source_content = content_result['content']
 
             # Создаем данные для семантического анализа
             citation_data = {
@@ -639,15 +663,13 @@ class SimpleAnalysisService:
 
             # Проверяем в каждом источнике
             for source in user_sources:
-                if source.get('has_content'):
+                if True:  # Проверяем все источники, даже если has_content=False
                     try:
-                        verification_result = await self._verify_citation_against_source_async(
-                            citation, source
-                        )
+                        # Пытаемся получить контент, даже если флаг False
+                        verification_result = await self._verify_citation_against_source_async(citation, source)
 
                         if verification_result['verified']:
                             citation_verifications.append(verification_result)
-                            # Останавливаемся после первого успешного совпадения
                             break
                     except Exception as e:
                         print(f"⚠️ Ошибка при проверке источника {source.get('id')}: {e}")

@@ -5,9 +5,6 @@ import requests
 import time
 from urllib.parse import quote
 import json
-from app.search.online_searcher import OnlineSearcher, SearchResult
-from app.config import APIConfig
-from app.search.russian_sources import RussianSourcesSearcher
 from app.services.library_service import library_service
 from app.bibliography.semantic_matcher import semantic_matcher
 import logging
@@ -20,15 +17,6 @@ class BibliographyChecker:
             'reference', 'source', 'works cited', 'literature'
         ]
         self.section_end_keywords = ['приложение', 'appendix', 'заключение', 'conclusion']
-
-        self.search_apis = {
-            'google_books': 'https://www.googleapis.com/books/v1/volumes',
-            'crossref': 'https://api.crossref.org/works',
-            'open_library': 'https://openlibrary.org/search.json',
-            'semantic_scholar': 'https://api.semanticscholar.org/graph/v1/paper/search'
-        }
-        self.searcher = OnlineSearcher(APIConfig())
-        self.russian_searcher = RussianSourcesSearcher()
         self.library_service = library_service
         self.semantic_matcher = semantic_matcher
         self.logger = logging.getLogger(__name__)
@@ -85,123 +73,6 @@ class BibliographyChecker:
 
         print(f"Найдено записей в библиографии: {len(bibliography_blocks)}")
         return bibliography_blocks
-
-    def enhance_with_online_search(self, bibliography_entries: List[BibliographyEntry]) -> List[BibliographyEntry]:
-        """Улучшает библиографические записи с помощью онлайн-поиска"""
-        print(f"\n🔍 УЛУЧШАЕМ БИБЛИОГРАФИЧЕСКИЕ ЗАПИСИ ({len(bibliography_entries)} записей)")
-        print("=" * 80)
-
-        enhanced_entries = []
-
-        for i, entry in enumerate(bibliography_entries):
-            print(f"\n📖 ЗАПИСЬ {i + 1}/{len(bibliography_entries)}: '{entry.text[:80]}...'")
-            print("-" * 80)
-
-            # Генерируем поисковые запросы
-            search_queries = self._generate_search_queries(entry.text)
-            entry.search_queries = search_queries
-            print(f"📋 Поисковые запросы: {search_queries}")
-
-            best_result = None
-
-            # 1. СНАЧАЛА ИЩЕМ В ЛОКАЛЬНОЙ БИБЛИОТЕКЕ (ВЫСОКИЙ ПРИОРИТЕТ)
-            print(f"\n🔎 ШАГ 1: ПОИСК В ЛОКАЛЬНОЙ БИБЛИОТЕКЕ")
-            library_match = self._search_in_library(entry.text, search_queries)
-
-            if library_match:
-                print(f"✅ НАЙДЕНО В ЛОКАЛЬНОЙ БИБЛИОТЕКЕ!")
-                best_result = self._convert_library_match_to_search_result(library_match)
-
-                # Добавляем информацию о совпадении в библиотеке
-                entry.library_match = {
-                    'source_id': library_match.get('id'),
-                    'title': library_match.get('title'),
-                    'authors': library_match.get('authors', []),
-                    'year': library_match.get('year'),
-                    'publisher': library_match.get('publisher'),
-                    'journal': library_match.get('journal'),
-                    'has_file': library_match.get('has_file', False),
-                    'has_content': library_match.get('has_content', False),
-                    'match_score': library_match.get('match_score', 0),
-                    'matched_fields': library_match.get('matched_fields', []),
-                    'matched_at': time.time()
-                }
-
-                print(f"📊 Используем результат из библиотеки (уверенность: {best_result.confidence:.2f})")
-                print(f"🏷️  Совпадение: {library_match.get('match_score')}%")
-            else:
-                # 2. ЕСЛИ НЕ НАШЛИ В БИБЛИОТЕКЕ - ИЩЕМ ОНЛАЙН
-                print(f"\n🔎 ШАГ 2: ПОИСК В ОНЛАЙН ИСТОЧНИКАХ (библиотека пуста или нет совпадений)")
-
-                # сначала российские источники
-                print(f"🌐 Пробуем российские источники...")
-                russian_result = self.russian_searcher.search_publication(
-                    search_queries[0] if search_queries else entry.text,
-                    entry.text
-                )
-
-                if russian_result:
-                    best_result = self._convert_russian_result_to_search_result(russian_result)
-                    print(f"✅ Найден в российских источниках (уверенность: {best_result.confidence:.2f})")
-                else:
-                    # если не рос то междунар
-                    print(f"🌍 Пробуем международные источники...")
-                    for query in search_queries:
-                        print(f"   🔎 Поиск: '{query}'")
-                        results = self.searcher.search_publication(query)
-
-                        if results:
-                            # Фильтруем и выбираем лучший результат
-                            relevant_results = [r for r in results if self._is_relevant_result(r, entry.text)]
-                            if relevant_results:
-                                best_result = self._filter_best_result(relevant_results, entry.text)
-                                if best_result:
-                                    print(f"   ✅ Релевантный результат (уверенность: {best_result.confidence:.2f})")
-                                    break
-                            else:
-                                print(f"   ⚠ Найдены результаты, но не релевантные")
-                        else:
-                            print(f"   ❌ Результатов нет")
-
-            if best_result:
-                # Преобразуем SearchResult в словарь для online_metadata
-                entry.online_metadata = {
-                    'source': best_result.source,
-                    'title': best_result.title,
-                    'authors': best_result.authors or [],
-                    'year': best_result.year,
-                    'publisher': best_result.publisher,
-                    'journal': best_result.journal,
-                    'volume': best_result.volume,
-                    'issue': best_result.issue,
-                    'pages': best_result.pages,
-                    'doi': best_result.doi,
-                    'isbn': best_result.isbn,
-                    'url': best_result.url,
-                    'confidence': best_result.confidence,
-                    'retrieved_at': time.time(),
-                }
-                entry.enhancement_confidence = best_result.confidence
-                entry.is_verified = True
-
-                source_name = "библиотеке" if best_result.source == 'personal_library' else best_result.source
-                print(f"✅ ИСПОЛЬЗУЕМ РЕЗУЛЬТАТ ИЗ {source_name.upper()} (уверенность: {best_result.confidence:.2f})")
-            else:
-                # Убедимся, что online_metadata это пустой словарь, а не None
-                entry.online_metadata = {}
-                print(f"❌ ПОДХОДЯЩИЙ РЕЗУЛЬТАТ НЕ НАЙДЕН")
-
-            enhanced_entries.append(entry)
-
-        print(f"\n{'=' * 80}")
-        print(
-            f"📊 ИТОГ: Улучшено {len([e for e in enhanced_entries if e.online_metadata])} из {len(enhanced_entries)} записей")
-
-        # Статистика по библиотеке
-        library_matches = [e for e in enhanced_entries if e.library_match]
-        print(f"📚 Найдено в библиотеке: {len(library_matches)} записей")
-
-        return enhanced_entries
 
     def _convert_library_match_to_search_result(self, library_match: Dict) -> SearchResult:
         """Конвертирует результат из библиотеки в SearchResult"""
@@ -1558,10 +1429,9 @@ class BibliographyChecker:
                                      source_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Семантическая проверка цитаты в источнике.
-        Используется для верификации, что автор действительно использовал этот источник.
         """
         try:
-            logger.info(f"Семантическая проверка цитаты в источнике {source_data.get('id')}")
+            print(f"Семантическая проверка цитаты в источнике {source_data.get('id')}")
 
             # Получаем полный текст цитаты с контекстом
             citation_text = citation_data.get('full_paragraph', '') or citation_data.get('text', '')
@@ -1578,6 +1448,19 @@ class BibliographyChecker:
                     'confidence': 0
                 }
 
+            # Извлекаем ключевые фразы из цитаты
+            key_phrases = self.semantic_matcher.extract_key_phrases(
+                f"{citation_text} {citation_context}".strip(),
+                max_phrases=15
+            )
+
+            # Ищем ключевые фразы в источнике
+            found_phrases = []
+            source_lower = source_content.lower()
+            for phrase in key_phrases:
+                if phrase.lower() in source_lower:
+                    found_phrases.append(phrase)
+
             # Семантическая проверка
             verification_result = self.semantic_matcher.verify_citation_in_source(
                 citation_data, source_data
@@ -1588,9 +1471,14 @@ class BibliographyChecker:
                 'success': True,
                 'verified': verification_result['verified'],
                 'confidence': verification_result['confidence'],
-                'verification_level': verification_result['verification_level'],
+                'verification_level': verification_result.get('verification_level'),
                 'best_match': verification_result.get('best_match'),
                 'analysis_details': verification_result.get('analysis_details'),
+                'key_phrases': {
+                    'total': len(key_phrases),
+                    'found': found_phrases,
+                    'found_count': len(found_phrases)
+                },
                 'source_info': {
                     'id': source_data.get('id'),
                     'title': source_data.get('title'),
@@ -1602,18 +1490,21 @@ class BibliographyChecker:
             if not verification_result['verified']:
                 result['reason'] = 'Семантически похожий текст не найден в источнике'
 
-            logger.info(f"Результат семантической проверки: "
-                        f"verified={result['verified']}, confidence={result['confidence']}")
+            print(
+                f"Результат семантической проверки: verified={result['verified']}, confidence={result['confidence']}, found_phrases={len(found_phrases)}/{len(key_phrases)}")
 
             return result
 
         except Exception as e:
-            logger.error(f"Ошибка при семантической проверке: {e}")
+            print(f"Ошибка при семантической проверке: {e}")
+            import traceback
+            traceback.print_exc()
             return {
                 'success': False,
                 'verified': False,
                 'reason': f'Ошибка анализа: {str(e)}',
-                'confidence': 0
+                'confidence': 0,
+                'key_phrases': {'total': 0, 'found': [], 'found_count': 0}
             }
 
     async def verify_citation_content(self, user_id: str, citation_text: str,

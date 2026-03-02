@@ -1038,6 +1038,7 @@ async def verify_citation_semantically(verification_data: dict):
 
         citation_data = verification_data.get('citation_data')
         source_id = verification_data.get('source_id')
+        source_content = verification_data.get('source_content')  # Может быть передан с фронтенда
 
         if not citation_data or not source_id:
             raise HTTPException(
@@ -1050,23 +1051,43 @@ async def verify_citation_semantically(verification_data: dict):
         if not source_result["success"]:
             raise HTTPException(status_code=404, detail="Источник не найден")
 
+        # Если контент передан с фронтенда, используем его
+        if source_content:
+            source_result["source"]["full_content"] = source_content
+
         # Выполняем семантическую проверку
         from app.bibliography.checker import BibliographyChecker
         checker = BibliographyChecker()
 
         result = checker.verify_citation_semantically(citation_data, source_result["source"])
 
+        # 🔴 ПРОБЛЕМА: result не содержит keyword_matches!
+        # Нужно добавить их из citation_data или из анализа
+
+        # ✅ ИСПРАВЛЕНИЕ: добавляем ключевые слова из цитаты
+        from app.bibliography.semantic_matcher import semantic_matcher
+        key_phrases = semantic_matcher.extract_key_phrases(
+            citation_data.get('text', '') + ' ' + citation_data.get('context', ''),
+            max_phrases=15
+        )
+
         return {
             "success": True,
-            "verification_result": result,
+            "verification_result": {
+                **result,
+                "key_phrases": key_phrases,  # Добавляем ключевые фразы
+                "citation_text": citation_data.get('text', ''),
+                "citation_context": citation_data.get('context', '')
+            },
             "citation_preview": citation_data.get('text', '')[:100],
             "source_title": source_result["source"].get('title')
         }
 
     except Exception as e:
-        logger.error(f"Error in semantic verification: {e}")
+        print(f"Error in semantic verification: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/api/batch-verify-citations")
 async def batch_verify_citations(batch_data: dict):

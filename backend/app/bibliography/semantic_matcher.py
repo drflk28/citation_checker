@@ -13,13 +13,16 @@ logger = logging.getLogger(__name__)
 
 class FixedSemanticCitationMatcher:
     """
-    ИСПРАВЛЕННАЯ версия: исключает метаданные источника из поиска
+    поиск и верификация цитат
+    TF-IDF векторизация для семантического сравнения текстов
+    Извлечение ключевых фраз для точного совпадения
+    Фильтрация метаданных (исключает названия, ФИО авторов и т.д.)
     """
 
     def __init__(self, language: str = 'russian'):
         self.language = language
 
-        # Инициализация TF-IDF с русскими стоп-словами (как у вас)
+        # Инициализация TF-IDF с русскими стоп-словами
         russian_stop_words = {
             'и', 'в', 'во', 'не', 'что', 'он', 'на', 'я', 'с', 'со', 'как', 'а', 'то',
             'все', 'она', 'так', 'его', 'но', 'да', 'ты', 'к', 'у', 'же', 'вы', 'за',
@@ -48,7 +51,7 @@ class FixedSemanticCitationMatcher:
         )
 
     def preprocess_text(self, text: str, preserve_keywords: bool = True) -> str:
-        """Предобработка текста (как у вас)"""
+        """Предобработка текста (к нижнему регистру, удаление спец символов и тд)"""
         if not text:
             return ""
 
@@ -64,8 +67,8 @@ class FixedSemanticCitationMatcher:
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
-    def extract_key_phrases(self, text: str, max_phrases: int = 10) -> List[str]:
-        """Извлечение ключевых фраз (как у вас)"""
+    def extract_key_phrases(self, text: str, max_phrases: int = 15) -> List[str]:
+        """Извлечение ключевых слов - ТОЛЬКО СЛОВА!"""
         if not text:
             return []
 
@@ -75,73 +78,100 @@ class FixedSemanticCitationMatcher:
         russian_stop_words = {
             'и', 'в', 'во', 'не', 'что', 'он', 'на', 'я', 'с', 'со', 'как', 'а', 'то',
             'все', 'она', 'так', 'его', 'но', 'да', 'ты', 'к', 'у', 'же', 'вы', 'за',
-            'бы', 'по', 'только', 'ее', 'мне', 'было', 'вот', 'от', 'меня', 'еще', 'нет'
+            'бы', 'по', 'только', 'ее', 'мне', 'было', 'вот', 'от', 'меня', 'еще', 'нет',
+            'о', 'из', 'ему', 'теперь', 'когда', 'даже', 'ну', 'вдруг', 'ли', 'если',
+            'уже', 'или', 'ни', 'быть', 'был', 'него', 'до', 'вас', 'нибудь', 'опять',
+            'уж', 'вам', 'ведь', 'там', 'потом', 'себя', 'ничего', 'ей', 'может', 'они',
+            'тут', 'где', 'есть', 'надо', 'ней', 'для', 'мы', 'тебя', 'их', 'чем', 'была',
+            'сам', 'чтоб', 'без', 'будто', 'чего', 'раз', 'тоже', 'себе', 'под', 'будет',
+            'ж', 'тогда', 'кто', 'этот', 'того', 'потому', 'этого', 'какой', 'совсем',
+            'ним', 'здесь', 'этом', 'один', 'почти', 'мой', 'тем', 'чтобы', 'нее', 'сейчас',
+            'были', 'куда', 'зачем', 'всех', 'никогда', 'можно', 'при', 'наконец', 'два',
+            'об', 'другой', 'хоть', 'после', 'над', 'больше', 'тот', 'через', 'эти', 'нас',
+            'про', 'всего', 'них', 'какая', 'много', 'разве', 'три', 'эту', 'моя', 'впрочем',
+            'хорошо', 'свою', 'этой', 'перед', 'иногда', 'лучше', 'чуть', 'том', 'нельзя',
+            'такой', 'им', 'более', 'всегда', 'конечно', 'всю', 'между'
         }
 
-        filtered_words = []
+        # ✅ ИЗВЛЕКАЕМ ТОЛЬКО СЛОВА ДЛИННЕЕ 3 СИМВОЛОВ
+        important_words = []
         for w in words:
             w_clean = w.strip('.,!?;:()"\'')
-            if w_clean and w_clean not in russian_stop_words and len(w_clean) > 2:
-                filtered_words.append(w_clean)
+            if (w_clean and
+                    w_clean not in russian_stop_words and
+                    len(w_clean) > 3 and
+                    not w_clean.isdigit()):
+                important_words.append(w_clean)
 
-        if len(filtered_words) < 2:
-            return filtered_words
+        # ✅ УБИРАЕМ ДУБЛИКАТЫ, но сохраняем порядок по частоте
+        word_counter = Counter(important_words)
 
-        phrases = []
-        phrases.extend([w for w in filtered_words if len(w) > 3])
-
-        for i in range(len(filtered_words) - 1):
-            bigram = f"{filtered_words[i]} {filtered_words[i + 1]}"
-            if len(bigram) > 5:
-                phrases.append(bigram)
-
-        for i in range(len(filtered_words) - 2):
-            trigram = f"{filtered_words[i]} {filtered_words[i + 1]} {filtered_words[i + 2]}"
-            if len(trigram) > 8:
-                phrases.append(trigram)
-
-        phrase_counter = Counter(phrases)
-        sorted_phrases = sorted(
-            phrase_counter.items(),
-            key=lambda x: (x[1], len(x[0].split())),
+        # Сортируем по частоте (самые частые слова важнее)
+        sorted_words = sorted(
+            word_counter.items(),
+            key=lambda x: (x[1], len(x[0])),
             reverse=True
         )
 
-        return [phrase for phrase, count in sorted_phrases[:max_phrases]]
+        result = [word for word, count in sorted_words[:max_phrases]]
+
+        print(f"📊 EXTRACTED KEYWORDS: {len(result)}")
+        print(f"   {result[:15]}")
+
+        return result
 
     def calculate_semantic_similarity(self, text1: str, text2: str) -> float:
-        """Вычисление семантической схожести (как у вас)"""
+        print(f"📏 CALCULATE SEMANTIC SIMILARITY")
+        print(f"   Text1 length: {len(text1)} chars, {len(text1.split())} words")
+        print(f"   Text2 length: {len(text2)} chars, {len(text2.split())} words")
+
         if not text1 or not text2:
+            print("   ❌ Empty text")
             return 0.0
 
         text1_clean = self.preprocess_text(text1)
         text2_clean = self.preprocess_text(text2)
 
+        print(f"   Clean text1: {text1_clean[:100]}...")
+        print(f"   Clean text2: {text2_clean[:100]}...")
+
         if len(text1_clean.split()) < 5 or len(text2_clean.split()) < 5:
-            return self._calculate_jaccard_similarity(text1_clean, text2_clean)
+            print(f"   📊 Using Jaccard (short texts)")
+            jaccard = self._calculate_jaccard_similarity(text1_clean, text2_clean)
+            print(f"   📊 Jaccard similarity: {jaccard:.3f}")
+            return jaccard
 
         try:
             if hasattr(self.vectorizer, 'vocabulary_'):
+                print("   🔄 Using existing vectorizer")
                 vec1 = self.vectorizer.transform([text1_clean])
                 vec2 = self.vectorizer.transform([text2_clean])
             else:
+                print("   🔄 Fitting new vectorizer")
                 tfidf_matrix = self.vectorizer.fit_transform([text1_clean, text2_clean])
                 vec1 = tfidf_matrix[0:1]
                 vec2 = tfidf_matrix[1:2]
 
             similarity = cosine_similarity(vec1, vec2)[0][0]
+            print(f"   📊 Cosine similarity: {similarity:.3f}")
 
             if len(text1_clean.split()) < 10 or len(text2_clean.split()) < 10:
                 jaccard = self._calculate_jaccard_similarity(text1_clean, text2_clean)
+                print(f"   📊 Jaccard similarity: {jaccard:.3f}")
                 similarity = 0.6 * similarity + 0.4 * jaccard
+                print(f"   📊 Combined similarity: {similarity:.3f}")
 
             return float(similarity)
         except Exception as e:
-            logger.error(f"Error calculating similarity: {e}")
-            return self._calculate_jaccard_similarity(text1_clean, text2_clean)
+            print(f"   ❌ Error calculating similarity: {e}")
+            import traceback
+            traceback.print_exc()
+            jaccard = self._calculate_jaccard_similarity(text1_clean, text2_clean)
+            print(f"   📊 Fallback Jaccard: {jaccard:.3f}")
+            return jaccard
 
     def _calculate_jaccard_similarity(self, text1: str, text2: str) -> float:
-        """Jaccard similarity (как у вас)"""
+        """Jaccard similarity = (пересечение множеств) / (объединение множеств)"""
         words1 = {w for w in text1.split() if len(w) > 2}
         words2 = {w for w in text2.split() if len(w) > 2}
 
@@ -156,13 +186,12 @@ class FixedSemanticCitationMatcher:
                               source_metadata: Optional[Dict[str, Any]] = None,
                               context_window: int = 500) -> List[Dict[str, Any]]:
         """
-        ИСПРАВЛЕННАЯ версия: игнорирует слишком короткие строки
+        поиск совпадений
         """
         if not citation_text or not source_content:
             return []
 
-        # 🔍 ДОПОЛНИТЕЛЬНАЯ ОТЛАДКА
-        print(f"\n🔍 find_semantic_matches получил:")
+        print(f"\n find_semantic_matches получил:")
         print(f"   Цитата: {citation_text[:100]}...")
         print(f"   Размер источника: {len(source_content)} символов")
         print(f"   Первые 200 символов источника: {source_content[:200]}")
@@ -171,11 +200,11 @@ class FixedSemanticCitationMatcher:
         key_phrases = self.extract_key_phrases(citation_text)
         print(f"   Ключевые фразы: {key_phrases[:10]}")
 
-        # ВАЖНО: сначала разбиваем на абзацы, а потом на предложения внутри абзацев
+        # сначала разбиваем на абзацы, а потом на предложения внутри абзацев
         paragraphs = self._split_into_smart_paragraphs(source_content)
 
         # Для отладки
-        logger.debug(f"📑 Создано {len(paragraphs)} абзацев для анализа:")
+        logger.debug(f" Создано {len(paragraphs)} абзацев для анализа:")
         for idx, para in enumerate(paragraphs[:5]):  # Показываем первые 5
             logger.debug(f"   Абзац {idx + 1}: {len(para.split())} слов, {len(para)} символов")
             logger.debug(f"      {para[:100]}...")
@@ -188,7 +217,7 @@ class FixedSemanticCitationMatcher:
             char_count = len(paragraph)
 
             if word_count < 10 or char_count < 50:
-                logger.debug(f"🚫 Пропускаем слишком короткий фрагмент ({word_count} слов, {char_count} символов)")
+                logger.debug(f" Пропускаем слишком короткий фрагмент ({word_count} слов, {char_count} символов)")
                 continue
 
             # Вычисляем схожесть
@@ -210,13 +239,13 @@ class FixedSemanticCitationMatcher:
             if word_count < 20 and len(key_phrase_matches) >= 2:
                 # Проверяем, не является ли это заголовком
                 if self._looks_like_title(paragraph):
-                    logger.debug(f"🚫 Пропускаем заголовок: {paragraph[:50]}...")
+                    logger.debug(f" Пропускаем заголовок: {paragraph[:50]}...")
                     continue
 
             # Взвешенная оценка
             if similarity > 0.2 or len(key_phrase_matches) >= 2:
-                # 🔍 Показываем найденное совпадение
-                print(f"\n✅ НАЙДЕНО СОВПАДЕНИЕ #{len(matches) + 1}:")
+                # Показываем найденное совпадение
+                print(f"\n НАЙДЕНО СОВПАДЕНИЕ #{len(matches) + 1}:")
                 print(f"   Абзац {i + 1} ({word_count} слов, схожесть {similarity:.3f})")
                 print(f"   Найдено фраз: {key_phrase_matches[:5]}")
                 print(f"   Текст: {paragraph[:200]}...")
@@ -242,9 +271,9 @@ class FixedSemanticCitationMatcher:
         # Сортируем по штрафованному score
         matches.sort(key=lambda x: x['penalized_score'], reverse=True)
 
-        print(f"\n📊 ВСЕГО НАЙДЕНО СОВПАДЕНИЙ: {len(matches)}")
+        print(f"\n ВСЕГО НАЙДЕНО СОВПАДЕНИЙ: {len(matches)}")
         if matches:
-            print(f"🏆 ЛУЧШЕЕ СОВПАДЕНИЕ:")
+            print(f" ЛУЧШЕЕ СОВПАДЕНИЕ:")
             print(f"   Слов: {matches[0]['word_count']}, схожесть: {matches[0]['similarity_score']:.3f}")
             print(f"   Фразы: {matches[0]['key_phrase_matches'][:5]}")
             print(f"   Текст: {matches[0]['fragment'][:200]}...")
@@ -253,7 +282,7 @@ class FixedSemanticCitationMatcher:
 
     def _looks_like_title(self, text: str) -> bool:
         """
-        Улучшенная проверка, является ли текст заголовком
+        проверка, является ли текст заголовком
         """
         if not text or len(text) < 10:
             return True
@@ -267,25 +296,26 @@ class FixedSemanticCitationMatcher:
             'введение', 'заключение', 'содержание',
             'приложение', 'список', 'литература',
             'библиография', 'references', 'index',
-            'анна', 'михайловна', 'лопарева', 'автор'
         ]
 
+        # Проверяем на явные заголовки
         for indicator in title_indicators:
-            if indicator in text_lower:
+            if indicator in text_lower and len(text) < 100:
                 return True
 
         # Если текст короткий и написан заглавными
         if len(text) < 100 and text.isupper():
             return True
 
-        # Если текст содержит номер главы
-        if re.search(r'глава\s+\d+|^\d+\.\d+', text_lower):
+        # Если текст содержит номер главы в начале
+        if re.match(r'^(глава|раздел|часть)\s+\d+', text_lower):
             return True
 
-        # Если текст не содержит знаков препинания и короткий
-        if len(text) < 100 and not any(p in text for p in '.!?;:'):
+        # Если текст очень короткий (меньше 30 символов) и не содержит знаков препинания
+        if len(text) < 30 and not any(p in text for p in '.!?;:'):
             return True
 
+        # НЕ считаем заголовком длинные тексты с содержанием
         return False
 
     def _split_into_smart_paragraphs(self, text: str) -> List[str]:
@@ -331,7 +361,7 @@ class FixedSemanticCitationMatcher:
                     paragraphs.append(' '.join(current_paragraph))
 
         # Для отладки
-        print(f"\n📑 РАЗБИЕНИЕ НА АБЗАЦЫ:")
+        print(f"\n РАЗБИЕНИЕ НА АБЗАЦЫ:")
         for i, para in enumerate(paragraphs):
             words = len(para.split())
             chars = len(para)
@@ -340,50 +370,9 @@ class FixedSemanticCitationMatcher:
 
         return paragraphs
 
-    def _split_into_paragraphs(self, text: str) -> List[str]:
-        """
-        Группирует строки в осмысленные абзацы (минимум 50 слов или 300 символов)
-        """
-        lines = text.split('\n')
-        lines = [line.strip() for line in lines if line.strip()]
-
-        if not lines:
-            return []
-
-        # Группируем строки в абзацы
-        paragraphs = []
-        current_paragraph = []
-        current_length = 0
-
-        for line in lines:
-            current_paragraph.append(line)
-            current_length += len(line)
-
-            # Если накопили достаточно текста, сохраняем как абзац
-            if current_length >= 300 or len(current_paragraph) >= 5:
-                paragraphs.append(' '.join(current_paragraph))
-                current_paragraph = []
-                current_length = 0
-
-        # Добавляем остаток
-        if current_paragraph:
-            # Если остаток слишком маленький, присоединяем к предыдущему абзацу
-            if paragraphs and current_length < 100:
-                paragraphs[-1] = paragraphs[-1] + ' ' + ' '.join(current_paragraph)
-            else:
-                paragraphs.append(' '.join(current_paragraph))
-
-        # Логируем для отладки
-        logger.debug(f"📑 Создано {len(paragraphs)} абзацев:")
-        for i, para in enumerate(paragraphs):
-            logger.debug(f"   Абзац {i + 1}: {len(para.split())} слов, {len(para)} символов")
-            logger.debug(f"      {para[:100]}...")
-
-        return paragraphs
-
     def _remove_common_metadata_words(self, citation_text: str, paragraph: str) -> tuple:
         """
-        Удаляет из рассмотрения общие слова из метаданных и возвращает очищенные версии
+        Позже переделать
         """
         common_metadata_words = {
             'лопарева', 'бизнес', 'планирование', 'учебник', 'вузов', 'издание',
@@ -416,7 +405,7 @@ class FixedSemanticCitationMatcher:
     def verify_citation_in_source(self, citation_data: Dict[str, Any],
                                   source_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        ИСПРАВЛЕННАЯ версия: проверяет реальный текст источника, исключая метаданные
+        проверяет реальный текст источника, исключая метаданные
         """
         citation_text = citation_data.get('full_paragraph', '') or citation_data.get('text', '')
         citation_context = citation_data.get('context', '')
@@ -435,6 +424,9 @@ class FixedSemanticCitationMatcher:
         if not full_citation_text:
             full_citation_text = citation_text
 
+        print(f"\n🔍 ПРОВЕРКА ЦИТАТЫ:")
+        print(f"   Текст цитаты: {full_citation_text[:200]}...")
+
         # Подготавливаем метаданные для исключения
         source_metadata = {
             'title': source_data.get('title', ''),
@@ -443,67 +435,111 @@ class FixedSemanticCitationMatcher:
             'year': source_data.get('year', '')
         }
 
-        # ========== УЛУЧШЕННАЯ ОБРАБОТКА ТЕКСТА ==========
+        # ========== ОБРАБОТКА ТЕКСТА ==========
 
-        # 1. Извлекаем ТОЛЬКО реальный контент, удаляя метаданные
+        # 1. Извлекаем реальный контент, удаляя метаданные
         clean_content = self._extract_main_content(source_content, source_metadata)
+        print(f"\n📄 ОЧИЩЕННЫЙ КОНТЕНТ:")
+        print(f"   Длина: {len(clean_content)} символов")
+        print(f"   Первые 200 символов: {clean_content[:200]}...")
 
-        # 2. Разбиваем на реальные абзацы (не по словам, а по структуре)
+        # 2. Разбиваем на реальные абзацы
         paragraphs = self._split_into_paragraphs(clean_content)
+        print(f"\n📑 НАЙДЕНО АБЗАЦЕВ: {len(paragraphs)}")
 
-        # 3. Извлекаем ключевые фразы из цитаты
-        key_phrases = self.extract_key_phrases(full_citation_text, max_phrases=15)
+        # 3. Извлекаем ключевые слова из цитаты (ТОЛЬКО СЛОВА, без фраз)
+        key_words = self.extract_keywords_only(full_citation_text, max_words=15)
+        print(f"\n📊 КЛЮЧЕВЫЕ СЛОВА ИЗ ЦИТАТЫ: {len(key_words)}")
+        for i, word in enumerate(key_words[:10]):
+            print(f"   {i + 1}. '{word}'")
 
-        # 4. Создаем список стоп-слов из метаданных для фильтрации
+        # 4. Создаем список стоп-слов из метаданных
         stop_words = self._get_stop_words_from_metadata(source_metadata)
+        print(f"\n🚫 СТОП-СЛОВА ИЗ МЕТАДАННЫХ: {len(stop_words)}")
+        print(f"   {list(stop_words)[:10]}...")
 
         # 5. Анализируем каждый абзац
         best_match = None
         best_score = 0
         all_matches = []
 
-        for paragraph in paragraphs:
+        # Множество для сбора ВСЕХ найденных слов из ВСЕХ абзацев
+        all_found_words = set()
+
+        # Если нет абзацев, создаем хотя бы один из всего текста
+        if not paragraphs and clean_content.strip():
+            paragraphs = [clean_content]
+            print(f"\n⚠️ Нет абзацев, используем весь текст как один абзац")
+
+        for i, paragraph in enumerate(paragraphs):
+            print(f"\n--- АБЗАЦ {i + 1}/{len(paragraphs)} ---")
+            print(f"   Длина: {len(paragraph.split())} слов, {len(paragraph)} символов")
+            print(f"   Текст: {paragraph[:150]}...")
+
             # Пропускаем слишком короткие абзацы
-            if len(paragraph.split()) < 15 or len(paragraph) < 100:
+            word_count = len(paragraph.split())
+            char_count = len(paragraph)
+
+            if word_count < 15 or char_count < 100:
+                print(f"   ⚠️ ПРОПУЩЕН: слишком короткий ({word_count} слов, {char_count} символов)")
                 continue
 
             # Пропускаем абзацы, которые выглядят как метаданные
-            if self._looks_like_title(paragraph) or self._is_metadata_paragraph(paragraph):
+            if self._looks_like_title(paragraph):
+                print(f"   ⚠️ ПРОПУЩЕН: похож на заголовок")
                 continue
+            if self._is_metadata_paragraph(paragraph):
+                print(f"   ⚠️ ПРОПУЩЕН: похож на метаданные")
+                continue
+
+            print(f"   ✅ ПРОШЕЛ фильтры")
 
             # Вычисляем семантическую схожесть
             similarity = self.calculate_semantic_similarity(full_citation_text, paragraph)
+            print(f"   📊 СЕМАНТИЧЕСКАЯ СХОЖЕСТЬ: {similarity:.3f}")
 
-            # Проверяем наличие ключевых фраз (исключая стоп-слова)
+            # Проверяем наличие ключевых слов (исключая стоп-слова)
             paragraph_lower = paragraph.lower()
-            meaningful_phrases = []
+            found_words_in_paragraph = []
 
-            for phrase in key_phrases:
-                phrase_lower = phrase.lower()
-                # Пропускаем фразы, состоящие только из стоп-слов
-                if any(stop_word in phrase_lower for stop_word in stop_words):
-                    continue
-                if phrase_lower in paragraph_lower:
-                    meaningful_phrases.append(phrase)
+            for word in key_words:
+                word_lower = word.lower()
+                # Убрали фильтрацию по стоп-словам для ключевых слов!
+                if word_lower in paragraph_lower:
+                    found_words_in_paragraph.append(word)
+                    all_found_words.add(word)
 
-            # Взвешенная оценка
-            phrase_score = len(meaningful_phrases) / max(len(key_phrases), 1) * 0.4
-            similarity_score = similarity * 0.6
+            # Выводим найденные слова в этом абзаце
+            print(f"   🔍 НАЙДЕНО СЛОВ В ЭТОМ АБЗАЦЕ: {len(found_words_in_paragraph)}/{len(key_words)}")
+            if found_words_in_paragraph:
+                print(f"      Примеры: {found_words_in_paragraph[:10]}")
 
-            total_score = phrase_score + similarity_score
+            # РАСЧЕТ ИТОГОВОГО SCORE для этого абзаца
+            word_ratio = len(found_words_in_paragraph) / max(len(key_words), 1)
 
-            # Бонус за длину абзаца (чем длиннее, тем вероятнее, что это реальный текст)
-            length_bonus = min(len(paragraph.split()) / 500, 0.2)
-            total_score += length_bonus
+            if similarity > 0:
+                word_score = word_ratio * 0.4
+                similarity_score = similarity * 0.6
+                total_score = word_score + similarity_score
+                print(f"   📊 WORD SCORE: {word_score:.3f} ({len(found_words_in_paragraph)}/{len(key_words)} слов)")
+                print(f"   📊 SIMILARITY SCORE: {similarity_score:.3f} (similarity={similarity:.3f})")
+            else:
+                # Если семантика не работает, используем только ключевые слова
+                total_score = word_ratio
+                print(
+                    f"   📊 USING ONLY KEYWORDS: {total_score:.3f} ({len(found_words_in_paragraph)}/{len(key_words)} слов)")
 
+            print(f"   📊 ИТОГОВЫЙ SCORE ДЛЯ АБЗАЦА: {total_score:.3f}")
+
+            # Сохраняем информацию о совпадении
             match_info = {
                 'text': paragraph[:500] + ('...' if len(paragraph) > 500 else ''),
                 'full_text': paragraph,
                 'similarity': similarity,
-                'phrase_matches': meaningful_phrases,
-                'phrase_count': len(meaningful_phrases),
+                'word_matches': found_words_in_paragraph,
+                'word_count': len(found_words_in_paragraph),
                 'score': total_score,
-                'word_count': len(paragraph.split())
+                'paragraph_word_count': word_count
             }
 
             all_matches.append(match_info)
@@ -511,12 +547,22 @@ class FixedSemanticCitationMatcher:
             if total_score > best_score:
                 best_score = total_score
                 best_match = match_info
+                print(f"   🎯 НОВЫЙ ЛУЧШИЙ SCORE: {best_score:.3f}")
+
+        # ПОСЛЕ цикла по всем абзацам - выводим общую статистику
+        total_found_words = len(all_found_words)
+        print(f"\n📊 ВСЕГО НАЙДЕНО УНИКАЛЬНЫХ СЛОВ: {total_found_words}/{len(key_words)}")
+        if all_found_words:
+            print(f"   Найденные слова: {sorted(list(all_found_words))[:15]}")
 
         # Сортируем все совпадения по убыванию
         all_matches.sort(key=lambda x: x['score'], reverse=True)
 
-        # Определяем результат
-        if best_match and best_score > 0.3:  # Порог уверенности
+        print(f"\n📊 ВСЕГО НАЙДЕНО СОВПАДЕНИЙ (абзацев): {len(all_matches)}")
+        print(f"🏆 ЛУЧШИЙ SCORE: {best_score:.3f}")
+
+        # ОПРЕДЕЛЯЕМ РЕЗУЛЬТАТ
+        if best_match and best_score > 0.05:  # Порог 5%
             confidence = min(best_score * 100, 95)
 
             # Определяем уровень верификации
@@ -527,6 +573,10 @@ class FixedSemanticCitationMatcher:
             else:
                 level = 'low'
 
+            print(f"\n✅ ВЕРИФИКАЦИЯ УСПЕШНА!")
+            print(f"   Уверенность: {confidence:.1f}%")
+            print(f"   Найдено уникальных слов: {total_found_words}/{len(key_words)}")
+
             return {
                 'verified': True,
                 'confidence': round(confidence, 1),
@@ -535,15 +585,15 @@ class FixedSemanticCitationMatcher:
                 'best_match': {
                     'text': best_match['text'],
                     'similarity': best_match['similarity'],
-                    'key_phrases_matched': best_match['phrase_matches'],
-                    'key_phrase_count': best_match['phrase_count'],
-                    'word_count': best_match['word_count']
+                    'key_words_matched': best_match['word_matches'],
+                    'key_word_count': best_match['word_count'],
+                    'word_count': best_match['paragraph_word_count']
                 },
                 'all_matches': [
                     {
                         'text': m['text'][:200] + ('...' if len(m['text']) > 200 else ''),
                         'similarity': m['similarity'],
-                        'key_phrases': m['phrase_matches'][:3],
+                        'key_words': m['word_matches'][:3],
                         'score': m['score']
                     }
                     for m in all_matches[:3]
@@ -553,16 +603,90 @@ class FixedSemanticCitationMatcher:
                     'source_length': len(source_content),
                     'clean_content_length': len(clean_content),
                     'total_matches_found': len(all_matches),
-                    'key_phrases_extracted': len(key_phrases)
+                    'key_words_extracted': len(key_words),
+                    'key_words_found_total': total_found_words,
+                    'paragraphs_analyzed': len(paragraphs)
                 }
             }
+
+        print(f"\n❌ ВЕРИФИКАЦИЯ НЕ УДАЛАСЬ")
+        print(f"   Причина: best_score={best_score:.3f} < 0.05")
 
         return {
             'verified': False,
             'confidence': 0,
             'reason': 'Совпадения не найдены в реальном тексте источника',
-            'matches': []
+            'best_match': best_match,
+            'all_matches': all_matches[:3] if all_matches else [],
+            'analysis_details': {
+                'citation_length': len(full_citation_text),
+                'source_length': len(source_content),
+                'clean_content_length': len(clean_content),
+                'total_matches_found': len(all_matches),
+                'key_words_extracted': len(key_words),
+                'key_words_found_total': len(all_found_words),
+                'paragraphs_analyzed': len(paragraphs)
+            }
         }
+
+    def extract_keywords_only(self, text: str, max_words: int = 20) -> List[str]:
+        """Извлекает только ключевые слова (без фраз) - УЛУЧШЕННАЯ ВЕРСИЯ"""
+        if not text:
+            return []
+
+        # Убираем номер цитаты в квадратных скобках
+        text = re.sub(r'\[\d+\]', '', text)
+
+        text_clean = self.preprocess_text(text, preserve_keywords=True)
+        words = text_clean.split()
+
+        # Расширенный список стоп-слов
+        russian_stop_words = {
+            'и', 'в', 'во', 'не', 'что', 'он', 'на', 'я', 'с', 'со', 'как', 'а', 'то',
+            'все', 'она', 'так', 'его', 'но', 'да', 'ты', 'к', 'у', 'же', 'вы', 'за',
+            'бы', 'по', 'только', 'ее', 'мне', 'было', 'вот', 'от', 'меня', 'еще', 'нет',
+            'о', 'из', 'ему', 'теперь', 'когда', 'даже', 'ну', 'вдруг', 'ли', 'если',
+            'уже', 'или', 'ни', 'быть', 'был', 'него', 'до', 'вас', 'нибудь', 'опять',
+            'уж', 'вам', 'ведь', 'там', 'потом', 'себя', 'ничего', 'ей', 'может', 'они',
+            'тут', 'где', 'есть', 'надо', 'ней', 'для', 'мы', 'тебя', 'их', 'чем', 'была',
+            'сам', 'чтоб', 'без', 'будто', 'чего', 'раз', 'тоже', 'себе', 'под', 'будет',
+            'ж', 'тогда', 'кто', 'этот', 'того', 'потому', 'этого', 'какой', 'совсем',
+            'ним', 'здесь', 'этом', 'один', 'почти', 'мой', 'тем', 'чтобы', 'нее', 'сейчас',
+            'были', 'куда', 'зачем', 'всех', 'никогда', 'можно', 'при', 'наконец', 'два',
+            'об', 'другой', 'хоть', 'после', 'над', 'больше', 'тот', 'через', 'эти', 'нас',
+            'про', 'всего', 'них', 'какая', 'много', 'разве', 'три', 'эту', 'моя', 'впрочем',
+            'хорошо', 'свою', 'этой', 'перед', 'иногда', 'лучше', 'чуть', 'том', 'нельзя',
+            'такой', 'им', 'более', 'всегда', 'конечно', 'всю', 'между',
+            # Добавляем служебные слова
+            'данные', 'этого', 'раздела', 'получены', 'это', 'что', 'как', 'так', 'также'
+        }
+
+        # Извлекаем ВСЕ слова длиннее 2 символов
+        important_words = []
+        for w in words:
+            w_clean = w.strip('.,!?;:()"\'')
+            if (w_clean and
+                    w_clean not in russian_stop_words and
+                    len(w_clean) > 2 and  # ← уменьшили с 3 до 2
+                    not w_clean.isdigit()):
+                important_words.append(w_clean)
+
+        # Считаем частоту
+        word_counter = Counter(important_words)
+
+        # Сортируем по частоте (самые частые - важнее)
+        sorted_words = sorted(
+            word_counter.items(),
+            key=lambda x: (x[1], len(x[0])),
+            reverse=True
+        )
+
+        result = [word for word, count in sorted_words[:max_words]]
+
+        print(f"📊 EXTRACTED KEYWORDS: {len(result)}")
+        print(f"   {result[:15]}")
+
+        return result
 
     def _extract_main_content(self, source_content: str, metadata: Dict[str, Any]) -> str:
         """
@@ -676,7 +800,7 @@ class FixedSemanticCitationMatcher:
         return paragraphs
 
     def _determine_verification_level(self, match: Dict[str, Any]) -> str:
-        """Определяет уровень верификации"""
+        """Определяет уровень верификации (удалить?)"""
         similarity = match.get('similarity_score', 0)
         key_phrases = match.get('key_phrase_count', 0)
 
@@ -698,110 +822,20 @@ class FixedSemanticCitationMatcher:
 
         paragraph_lower = paragraph.lower()
 
-        # Паттерны метаданных
-        metadata_patterns = [
-            r'^анна|александр|владимир|иван|петр|сергей|дмитрий',
-            r'лопарева|иванов|петров|сидоров|смирнов|кузнецов',
-            r'учебник|пособие|издание|изд\.|издательство',
-            r'минобрнауки|министерство|университет|академия|институт',
-            r'санкт-петербург|москва|лэти|юургу|влгу',
-        ]
+        # Паттерны метаданных - только для очень коротких текстов
+        if len(paragraph) < 50:
+            metadata_patterns = [
+                r'^анна|александр|владимир|иван|петр|сергей|дмитрий',
+                r'лопарева|иванов|петров|сидоров|смирнов|кузнецов',
+                r'учебник|пособие|издание|изд\.|издательство',
+                r'минобрнауки|министерство|университет|академия|институт',
+            ]
 
-        for pattern in metadata_patterns:
-            if re.search(pattern, paragraph_lower):
-                return True
+            for pattern in metadata_patterns:
+                if re.search(pattern, paragraph_lower):
+                    return True
 
         return False
-
-    def debug_paragraph_splitting(self, source_content: str):
-        """
-        Подробно показывает, как разбивается текст на абзацы
-        """
-        print("\n" + "=" * 80)
-        print("🔍 ДЕТАЛЬНАЯ ОТЛАДКА РАЗБИЕНИЯ ТЕКСТА")
-        print("=" * 80)
-
-        # Показываем исходный текст
-        print(f"\n📄 ИСХОДНЫЙ ТЕКСТ ({len(source_content)} символов):")
-        print("-" * 40)
-        lines = source_content.split('\n')
-        for i, line in enumerate(lines):
-            if line.strip():
-                print(f"  {i + 1}: '{line}'")
-
-        # Показываем, как работает _split_into_smart_paragraphs
-        print(f"\n📑 РАЗБИЕНИЕ НА АБЗАЦЫ:")
-        print("-" * 40)
-
-        # Используем тот же метод, что и в алгоритме
-        paragraphs = self._split_into_smart_paragraphs(source_content)
-
-        for i, para in enumerate(paragraphs):
-            word_count = len(para.split())
-            char_count = len(para)
-            print(f"\n  Абзац {i + 1}:")
-            print(f"    Слов: {word_count}, символов: {char_count}")
-            print(f"    Текст: {para[:200]}..." if len(para) > 200 else f"    Текст: {para}")
-
-            # Проверяем, проходит ли фильтр
-            if word_count < 10 or char_count < 50:
-                print(f"    ⚠️ НЕ ПРОХОДИТ фильтр (слишком короткий)")
-            else:
-                print(f"    ✅ ПРОХОДИТ фильтр")
-
-        return paragraphs
-
-    def debug_citation_comparison(self, citation_text: str, paragraphs: List[str]):
-        """
-        Подробно показывает сравнение цитаты с каждым абзацем
-        """
-        print("\n" + "=" * 80)
-        print("🔍 ДЕТАЛЬНОЕ СРАВНЕНИЕ ЦИТАТЫ С АБЗАЦАМИ")
-        print("=" * 80)
-
-        print(f"\n📝 ЦИТАТА:")
-        print(f"  {citation_text[:200]}...")
-
-        # Извлекаем ключевые фразы из цитаты
-        key_phrases = self.extract_key_phrases(citation_text)
-        print(f"\n🔑 КЛЮЧЕВЫЕ ФРАЗЫ ИЗ ЦИТАТЫ:")
-        for i, phrase in enumerate(key_phrases[:10]):
-            print(f"  {i + 1}. '{phrase}'")
-
-        print(f"\n📊 СРАВНЕНИЕ С КАЖДЫМ АБЗАЦЕМ:")
-        print("-" * 80)
-
-        for i, para in enumerate(paragraphs):
-            word_count = len(para.split())
-            char_count = len(para)
-
-            # Пропускаем короткие абзацы
-            if word_count < 10 or char_count < 50:
-                continue
-
-            print(f"\n📑 АБЗАЦ {i + 1} ({word_count} слов, {char_count} символов):")
-
-            # Вычисляем схожесть
-            similarity = self.calculate_semantic_similarity(citation_text, para)
-            print(f"  📊 Семантическая схожесть: {similarity:.3f}")
-
-            # Проверяем ключевые фразы
-            para_lower = para.lower()
-            found_phrases = []
-
-            for phrase in key_phrases:
-                phrase_lower = phrase.lower()
-                if phrase_lower in para_lower:
-                    found_phrases.append(phrase)
-                    print(f"  ✅ Найдена фраза: '{phrase}'")
-
-            if not found_phrases:
-                print(f"  ❌ Ключевые фразы не найдены")
-
-            # Показываем часть текста для проверки
-            print(f"  📖 Текст абзаца:")
-            print(f"    {para[:300]}...")
-            print(f"  {'=' * 40}")
 
 # Глобальный экземпляр для использования
 semantic_matcher = FixedSemanticCitationMatcher(language='russian')
