@@ -884,44 +884,454 @@ const LibrarySourceModal = ({ source, onClose }) => {
   );
 };
 
-const IssuesTab = ({analysis}) => (
+const IssuesTab = ({analysis}) => {
+  const issues = analysis?.issues || [];
+  const citations = analysis?.citations || [];
+
+  // Группируем проблемы по типу
+  const issuesByType = {
+    missing: issues.filter(i => i.type === 'missing'),
+    unused: issues.filter(i => i.type === 'unused'),
+    misreferenced_citation: issues.filter(i => i.type === 'misreferenced_citation'),
+    citation_not_found_in_source: issues.filter(i => i.type === 'citation_not_found_in_source'),
+    low_confidence_citation: issues.filter(i => i.type === 'low_confidence_citation'),
+    unreferenced_citation: issues.filter(i => i.type === 'unreferenced_citation'),
+    other: issues.filter(i => !['missing', 'unused', 'misreferenced_citation', 'citation_not_found_in_source', 'low_confidence_citation', 'unreferenced_citation'].includes(i.type))
+  };
+
+  // Создаем карту существующих цитат для быстрого доступа
+  const citationNumbers = new Set(
+    citations
+      .filter(c => c.citation_number)
+      .map(c => c.citation_number)
+  );
+
+  // Проверяем, есть ли уже цитата с таким номером
+  const hasCitationWithNumber = (num) => citationNumbers.has(num);
+
+  const stats = {
+    total: issues.length,
+    high: issues.filter(i => i.severity === 'high').length,
+    medium: issues.filter(i => i.severity === 'medium').length,
+    low: issues.filter(i => i.severity === 'low').length
+  };
+
+  return (
     <div className="issues-tab">
-      <h3 className="tab-title">
-        Найденные проблемы ({(analysis.issues || []).length})
-      </h3>
-      <div className="issues-list">
-        {(analysis.issues || []).map((issue, index) => (
-        <div
-          key={index}
-          className={`issue-item issue-${issue.severity || 'medium'}`}
-        >
-          <div className="issue-content">
-            <div className="issue-main">
-              <h4 className="issue-type">
-                {issue.type || 'Неизвестная'} проблема
-              </h4>
-              <p className="issue-description">{issue.description}</p>
-              {issue.suggestion && (
-                <p className="issue-suggestion">
-                  <strong>Рекомендация:</strong> {issue.suggestion}
-                </p>
-              )}
-            </div>
-            <span className={`issue-severity severity-${issue.severity || 'medium'}`}>
-              {issue.severity || 'неизвестно'}
-            </span>
+      <div className="issues-header">
+        <h3 className="tab-title">
+          Найденные проблемы ({issues.length})
+        </h3>
+
+        {issues.length > 0 && (
+          <div className="issues-stats">
+            <span className="stat-badge stat-high">Высокий: {stats.high}</span>
+            <span className="stat-badge stat-medium">Средний: {stats.medium}</span>
+            <span className="stat-badge stat-low">Низкий: {stats.low}</span>
           </div>
+        )}
+      </div>
+
+      <div className="issues-list">
+        {/* Отсутствующие ссылки */}
+        {issuesByType.missing.length > 0 && (
+          <IssueGroup
+            title="Отсутствующие в библиографии"
+            issues={issuesByType.missing}
+            icon="❌"
+          />
+        )}
+
+        {/* Неиспользуемые записи */}
+        {issuesByType.unused.length > 0 && (
+          <IssueGroup
+            title="Неиспользуемые записи библиографии"
+            issues={issuesByType.unused}
+            icon="📌"
+          />
+        )}
+
+        {/* Некорректные ссылки */}
+        {issuesByType.misreferenced_citation.length > 0 && (
+          <IssueGroup
+            title="Некорректные ссылки"
+            issues={issuesByType.misreferenced_citation}
+            icon="⚠️"
+            renderIssue={(issue) => (
+              <MisreferencedIssue issue={issue} />
+            )}
+          />
+        )}
+
+        {/* Отсутствующие в источнике цитаты */}
+        {issuesByType.citation_not_found_in_source.length > 0 && (
+          <IssueGroup
+            title="Цитаты не найдены в источнике"
+            issues={issuesByType.citation_not_found_in_source}
+            icon="🔍"
+            renderIssue={(issue) => (
+              <MissingCitationIssue issue={issue} />
+            )}
+          />
+        )}
+
+        {/* Цитаты с низкой уверенностью */}
+        {issuesByType.low_confidence_citation.length > 0 && (
+          <IssueGroup
+            title="Цитаты с низкой уверенностью"
+            issues={issuesByType.low_confidence_citation}
+            icon="⚠️"
+            renderIssue={(issue) => (
+              <LowConfidenceIssue issue={issue} />
+            )}
+          />
+        )}
+
+        {/* Цитаты без ссылок - с контекстом */}
+        {issuesByType.unreferenced_citation.length > 0 && (
+          <IssueGroup
+            title="Возможные цитаты без ссылок"
+            issues={issuesByType.unreferenced_citation}
+            icon="📝"
+            renderIssue={(issue) => (
+              <UnreferencedCitationIssue
+                issue={issue}
+                hasCitationWithNumber={hasCitationWithNumber}
+              />
+            )}
+          />
+        )}
+
+        {/* Другие проблемы */}
+        {issuesByType.other.length > 0 && (
+          <IssueGroup
+            title="Другие проблемы"
+            issues={issuesByType.other}
+            icon="🔧"
+          />
+        )}
+
+        {issues.length === 0 && (
+          <div className="success-state">
+            <div className="success-icon">✅</div>
+            <div className="success-message">Проблемы не найдены!</div>
+            <p className="success-subtitle">Все цитаты правильно оформлены и соответствуют источникам.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const IssueGroup = ({ title, issues, icon, renderIssue }) => (
+  <div className="issue-group">
+    <div className="group-header">
+      <span className="group-icon">{icon}</span>
+      <h4 className="group-title">{title} ({issues.length})</h4>
+    </div>
+    <div className="group-issues">
+      {issues.map((issue, index) => (
+        <div key={index}>
+          {renderIssue ? renderIssue(issue) : (
+            <DefaultIssueCard issue={issue} />
+          )}
         </div>
       ))}
-      {(analysis.issues || []).length === 0 && (
-        <div className="success-state">
-          <div className="success-message">Проблемы не найдены!</div>
-          <p className="success-subtitle">Все цитаты правильно оформлены.</p>
-        </div>
-      )}
     </div>
   </div>
 );
+
+
+// Компонент для цитат без ссылок
+const UnreferencedCitationIssue = ({ issue, hasCitationWithNumber }) => {
+  const [expanded, setExpanded] = useState(false);
+
+  // Проверяем, есть ли уже цитата с таким номером
+  const checkExistingCitations = () => {
+    // Ищем номера цитат в тексте
+    const matches = issue.sentence.match(/\[(\d+)\]/g);
+    if (matches) {
+      const numbers = matches.map(m => parseInt(m.match(/\d+/)[0]));
+      const existing = numbers.filter(n => hasCitationWithNumber(n));
+      if (existing.length > 0) {
+        return {
+          hasExisting: true,
+          numbers: existing
+        };
+      }
+    }
+    return { hasExisting: false };
+  };
+
+  const existingCheck = checkExistingCitations();
+
+  return (
+    <div className={`issue-card issue-unreferenced ${expanded ? 'expanded' : ''}`}>
+      <div className="issue-header" onClick={() => setExpanded(!expanded)}>
+        <div className="issue-main-info">
+          <span className="issue-badge">📝 Возможная цитата</span>
+          <span className={`severity-tag severity-${issue.severity}`}>
+            {issue.severity === 'high' ? 'Высокий' :
+             issue.severity === 'medium' ? 'Средний' : 'Низкий'}
+          </span>
+        </div>
+        <button className="expand-btn">
+          {expanded ? '▼' : '▶'}
+        </button>
+      </div>
+
+      <div className="issue-content">
+        <p className="issue-description">{issue.description}</p>
+
+        {/* Контекст до */}
+        {issue.context_before && (
+          <div className="context-before">
+            <div className="context-label">📄 Предыдущий контекст:</div>
+            <div className="context-text">{issue.context_before}</div>
+          </div>
+        )}
+
+        {/* Текст из документа */}
+        <div className="document-text">
+          <div className="text-label">🔍 Подозрительный текст:</div>
+          <div className="text-content highlight">
+            {issue.sentence}
+          </div>
+        </div>
+
+        {/* Весь абзац */}
+        {issue.paragraph && issue.paragraph !== issue.sentence && (
+          <div className="full-paragraph">
+            <div className="paragraph-label">📑 Полный абзац:</div>
+            <div className="paragraph-text">{issue.paragraph}</div>
+          </div>
+        )}
+
+        {existingCheck.hasExisting && (
+          <div className="warning-note">
+            ⚠️ В этом тексте уже есть ссылки [{existingCheck.numbers.join(', ')}],
+            но система определила их как отдельные предложения.
+          </div>
+        )}
+
+        {expanded && (
+          <div className="expanded-content">
+            {/* Совпадения с источниками */}
+            {issue.matches && issue.matches.length > 0 && (
+              <div className="source-matches">
+                <div className="matches-label">🔍 Похожие фрагменты из источников:</div>
+                {issue.matches.map((match, idx) => (
+                  <div key={idx} className="match-item">
+                    <div className="match-source">
+                      <strong>Источник:</strong> {match.source_title}
+                    </div>
+                    <div className="match-confidence">
+                      Уверенность: {match.confidence?.toFixed(1)}%
+                    </div>
+                    <div className="match-text">
+                      {match.source_sentence_preview || match.source_sentence}
+                    </div>
+
+                    {match.matched_shingles_count && (
+                      <div className="match-details">
+                        <small>
+                          Совпадающих фрагментов: {match.matched_shingles_count} из {match.total_shingles}
+                        </small>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Рекомендация */}
+            <div className="issue-suggestion">
+              <strong>💡 Рекомендация:</strong> {issue.suggestion ||
+                'Добавьте ссылку на источник, если это цитата или заимствование'}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// Компонент для некорректных ссылок
+const MisreferencedIssue = ({ issue }) => {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className={`issue-card issue-misreference ${expanded ? 'expanded' : ''}`}>
+      <div className="issue-header" onClick={() => setExpanded(!expanded)}>
+        <div className="issue-main-info">
+          <span className="issue-badge">⚠️ Некорректная ссылка [{issue.citation_number}]</span>
+          <span className="severity-tag severity-high">Высокий</span>
+        </div>
+        <button className="expand-btn">
+          {expanded ? '▼' : '▶'}
+        </button>
+      </div>
+
+      <div className="issue-content">
+        <p className="issue-description">{issue.description}</p>
+
+        <div className="comparison">
+          <div className="expected">
+            <div className="label">📌 Ожидаемый источник:</div>
+            <div className="text">{issue.expected_source}</div>
+          </div>
+          <div className="actual">
+            <div className="label">🔍 Фактический источник:</div>
+            <div className="text highlight">{issue.actual_source}</div>
+          </div>
+        </div>
+
+        {expanded && (
+          <div className="expanded-content">
+            <div className="citation-text">
+              <strong>Цитата:</strong>
+              <p>{issue.citation_text}</p>
+            </div>
+            <div className="issue-suggestion">
+              <strong>💡 Рекомендация:</strong> {issue.suggestion}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// Компонент для отсутствующих цитат
+const MissingCitationIssue = ({ issue }) => {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className={`issue-card issue-missing-citation ${expanded ? 'expanded' : ''}`}>
+      <div className="issue-header" onClick={() => setExpanded(!expanded)}>
+        <div className="issue-main-info">
+          <span className="issue-badge">❌ Цитата [{issue.citation_number}] не найдена</span>
+          <span className={`severity-tag severity-${issue.severity}`}>
+            {issue.severity === 'high' ? 'Высокий' : 'Средний'}
+          </span>
+        </div>
+        <button className="expand-btn">
+          {expanded ? '▼' : '▶'}
+        </button>
+      </div>
+
+      <div className="issue-content">
+        <p className="issue-description">{issue.description}</p>
+
+        <div className="citation-text">
+          <strong>Цитата:</strong>
+          <p>{issue.citation_text}</p>
+        </div>
+
+        <div className="source-info">
+          <strong>Источник:</strong> {issue.source_title}
+        </div>
+
+        {expanded && issue.details && (
+          <div className="expanded-content">
+            <div className="details-section">
+              <strong>Детали проверки:</strong>
+              {issue.details.methods && (
+                <ul className="details-list">
+                  {Object.entries(issue.details.methods).map(([key, value]) => (
+                    <li key={key}>
+                      {key}: {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="issue-suggestion">
+              <strong>💡 Рекомендация:</strong> {issue.suggestion}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// Компонент для низкой уверенности
+const LowConfidenceIssue = ({ issue }) => {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className={`issue-card issue-low-confidence ${expanded ? 'expanded' : ''}`}>
+      <div className="issue-header" onClick={() => setExpanded(!expanded)}>
+        <div className="issue-main-info">
+          <span className="issue-badge">⚠️ Цитата [{issue.citation_number}]</span>
+          <span className="severity-tag severity-medium">Средний</span>
+        </div>
+        <button className="expand-btn">
+          {expanded ? '▼' : '▶'}
+        </button>
+      </div>
+
+      <div className="issue-content">
+        <p className="issue-description">{issue.description}</p>
+
+        <div className="confidence-info">
+          Уверенность: <span className="confidence-value">{issue.confidence?.toFixed(1)}%</span>
+        </div>
+
+        <div className="citation-text">
+          <strong>Цитата:</strong>
+          <p>{issue.citation_text}</p>
+        </div>
+
+        {expanded && (
+          <div className="expanded-content">
+            <div className="source-info">
+              <strong>Источник:</strong> {issue.source_title}
+            </div>
+            <div className="issue-suggestion">
+              <strong>💡 Рекомендация:</strong> {issue.suggestion}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// Дефолтная карточка для других типов проблем
+const DefaultIssueCard = ({ issue }) => {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className={`issue-card ${expanded ? 'expanded' : ''}`}>
+      <div className="issue-header" onClick={() => setExpanded(!expanded)}>
+        <div className="issue-main-info">
+          <span className="issue-badge">{issue.type || 'Проблема'}</span>
+          <span className={`severity-tag severity-${issue.severity || 'medium'}`}>
+            {issue.severity || 'средний'}
+          </span>
+        </div>
+        <button className="expand-btn">
+          {expanded ? '▼' : '▶'}
+        </button>
+      </div>
+
+      <div className="issue-content">
+        <p className="issue-description">{issue.description}</p>
+
+        {expanded && issue.suggestion && (
+          <div className="expanded-content">
+            <div className="issue-suggestion">
+              <strong>💡 Рекомендация:</strong> {issue.suggestion}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 
 // МОДАЛЬНОЕ ОКНО С ДЕТАЛЯМИ (опционально)
 const SourceDetailsModal = ({ entry, onClose }) => {

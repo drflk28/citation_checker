@@ -144,3 +144,37 @@ class SearchMatch(BaseModel):
     source: UserSource
     confidence: float
     matched_fields: List[str]
+
+class MisreferenceIssue(BaseModel):
+    """Проблема с некорректной ссылкой"""
+    type: str = "misreferenced_citation"
+    citation_number: int
+    citation_text: str
+    expected_source: str
+    actual_source: str
+    confidence: float
+    description: str
+    severity: str = "high"
+    suggestion: str = "Проверьте соответствие номера ссылки и источника в библиографии"
+
+class MissingCitationIssue(BaseModel):
+    """Проблема с цитатой, которой нет в источнике"""
+    type: str = "citation_not_found_in_source"
+    citation_number: int
+    citation_text: str
+    source_id: str
+    source_title: str
+    description: str
+    confidence: float
+    severity: str = "medium"
+    suggestion: str = "Проверьте, действительно ли эта цитата содержится в указанном источнике"
+
+class UnreferencedCitationIssue(BaseModel):
+    """Проблема с текстом, похожим на цитату, но без ссылки"""
+    type: str = "unreferenced_citation"
+    sentence: str
+    position: int
+    matches: List[Dict[str, Any]]
+    description: str
+    severity: str = "medium"
+    suggestion: str = "Добавьте ссылку на источник, если это цитата"

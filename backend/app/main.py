@@ -17,7 +17,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from fastapi import WebSocket
 from typing import Dict
 
-from .auth.dependencies import get_current_user, get_current_user_optional
 from .services.library_service import library_service
 from .models.user_models import User
 from app.citation_parser.citation_extractor import CitationExtractor
@@ -431,13 +430,68 @@ async def list_documents():
 # анализ документа
 @app.post("/documents/{doc_id}/analyze")
 async def analyze_document(doc_id: str):
-    # Получаем документ из хранилища (которое является словарем)
-    document = documents_store.get(doc_id)  # Используем .get() для словаря
+    """
+    Запускает анализ документа
+    """
+    # Получаем документ из хранилища
+    document = documents_store.get(doc_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    file_path = document.file_path  # Используем атрибут, а не ключ словаря
-    result = analysis_service.analyze_document(file_path, doc_id)
+    file_path = document.file_path
+
+    # Запускаем анализ в фоновом режиме
+    import asyncio
+    loop = asyncio.get_event_loop()
+
+    # Запускаем анализ в отдельном потоке, чтобы не блокировать event loop
+    result = await loop.run_in_executor(
+        None,  # используем default executor
+        analysis_service.analyze_document,
+        file_path,
+        doc_id
+    )
+
+    return result
+
+
+@app.post("/documents/{doc_id}/analyze-full")
+async def analyze_document_full(doc_id: str):
+    """
+    Запускает полный анализ документа со всеми проверками
+    """
+    # Получаем документ из хранилища
+    document = documents_store.get(doc_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_path = document.file_path
+
+    # Запускаем анализ в фоновом режиме
+    import asyncio
+    loop = asyncio.get_event_loop()
+
+    # Запускаем анализ в отдельном потоке
+    result = await loop.run_in_executor(
+        None,
+        analysis_service.analyze_document,
+        file_path,
+        doc_id
+    )
+
+    # Если анализ успешен, запускаем дополнительные проверки
+    if result and result.get('status') == 'completed':
+        try:
+            # Получаем контент источников
+            source_contents = await analysis_service._get_all_source_contents_async("demo_user")
+
+            # Обновляем результат с дополнительными проверками
+            result['source_contents_count'] = len(source_contents)
+            result['additional_checks_available'] = len(source_contents) > 0
+
+        except Exception as e:
+            print(f"Error in additional checks: {e}")
+            result['additional_checks_error'] = str(e)
 
     return result
 
@@ -1285,6 +1339,331 @@ async def websocket_library_updates(websocket: WebSocket):
         if connection_id in active_connections:
             del active_connections[connection_id]
 
+
+@app.post("/api/documents/{doc_id}/check-misreferences")
+async def check_misreferences(doc_id: str):
+    """
+    Проверяет документ на некорректные ссылки
+    """
+    try:
+        # Получаем результат анализа
+        result = analysis_service.get_analysis_result(doc_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Analysis not found")
+
+        # Получаем контент источников
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        source_contents = loop.run_until_complete(
+            analysis_service._get_all_source_contents("demo_user")
+        )
+
+        # Создаем экземпляр проверщика
+        from app.bibliography.misreference_checker import MisreferenceChecker
+        checker = MisreferenceChecker()
+
+        # Выполняем проверку
+        issues = checker.check_misreferences(
+            result.get('citations', []),
+            result.get('bibliography_entries', []),
+            source_contents
+        )
+
+        return {
+            "success": True,
+            "doc_id": doc_id,
+            "issues": issues,
+            "count": len(issues)
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking misreferences: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/documents/{doc_id}/check-missing-citations")
+async def check_missing_citations(doc_id: str):
+    """
+    Проверяет, действительно ли цитаты присутствуют в источниках
+    """
+    try:
+        # Получаем результат анализа
+        result = analysis_service.get_analysis_result(doc_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Analysis not found")
+
+        # Получаем контент источников
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        source_contents = loop.run_until_complete(
+            analysis_service._get_all_source_contents("demo_user")
+        )
+
+        # Создаем словарь соответствия
+        bibliography_matches = {}
+        for entry in result.get('bibliography_entries', []):
+            if entry.get('library_match'):
+                citation_nums = entry.get('matched_citations', [])
+                for num in citation_nums:
+                    try:
+                        bibliography_matches[int(num)] = entry['library_match']['id']
+                    except:
+                        pass
+
+        # Создаем экземпляр проверщика
+        from app.verification.missing_citation_checker import MissingCitationChecker
+        checker = MissingCitationChecker()
+
+        # Выполняем проверку
+        issues = checker.check_missing_citations(
+            result.get('citations', []),
+            source_contents,
+            bibliography_matches
+        )
+
+        return {
+            "success": True,
+            "doc_id": doc_id,
+            "issues": issues,
+            "count": len(issues)
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking missing citations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/documents/{doc_id}/find-unreferenced")
+async def find_unreferenced_citations(doc_id: str):
+    """
+    Ищет в документе текст, похожий на содержимое источников, но без ссылок
+    """
+    try:
+        # Получаем результат анализа
+        result = analysis_service.get_analysis_result(doc_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Analysis not found")
+
+        # Получаем документ
+        document = documents_store.get(doc_id)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        # Получаем контент источников
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        source_contents = loop.run_until_complete(
+            analysis_service._get_all_source_contents("demo_user")
+        )
+
+        # Преобразуем в список
+        source_list = []
+        for source_id, content in source_contents.items():
+            source_list.append({
+                'id': source_id,
+                'title': analysis_service._get_source_title(source_id),
+                'full_content': content
+            })
+
+        # Получаем текст документа
+        try:
+            with open(document.file_path, 'r', encoding='utf-8') as f:
+                doc_text = f.read()
+        except:
+            # Если не удалось прочитать как текст, пробуем через парсер
+            parsed = analysis_service.document_parser.parse_document(document.file_path)
+            doc_text = parsed.raw_text if hasattr(parsed, 'raw_text') else ''
+
+        # Создаем экземпляр проверщика
+        from app.verification.unreferenced_citation_checker import UnreferencedCitationChecker
+        checker = UnreferencedCitationChecker()
+
+        # Выполняем проверку
+        issues = checker.find_unreferenced_citations(
+            doc_text,
+            source_list,
+            result.get('citations', [])
+        )
+
+        return {
+            "success": True,
+            "doc_id": doc_id,
+            "issues": issues,
+            "count": len(issues)
+        }
+
+    except Exception as e:
+        logger.error(f"Error finding unreferenced citations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/documents/{doc_id}/full-analysis")
+async def get_full_analysis(doc_id: str):
+    """
+    Получает полный анализ со всеми проверками
+    """
+    try:
+        result = analysis_service.get_analysis_result(doc_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Analysis not found")
+
+        # Запускаем дополнительные проверки, если их еще нет
+        if 'issues_by_category' not in result:
+            # Запускаем все проверки в фоне
+            background_tasks = BackgroundTasks()
+
+            # Создаем задачи для каждой проверки
+            async def run_all_checks():
+                # Получаем контент источников
+                source_contents = await analysis_service._get_all_source_contents("demo_user")
+
+                # 1. Некорректные ссылки
+                from app.bibliography.misreference_checker import MisreferenceChecker
+                misref_checker = MisreferenceChecker()
+                misref_issues = misref_checker.check_misreferences(
+                    result.get('citations', []),
+                    result.get('bibliography_entries', []),
+                    source_contents
+                )
+
+                # 2. Отсутствующие цитаты
+                bibliography_matches = {}
+                for entry in result.get('bibliography_entries', []):
+                    if entry.get('library_match'):
+                        citation_nums = entry.get('matched_citations', [])
+                        for num in citation_nums:
+                            try:
+                                bibliography_matches[int(num)] = entry['library_match']['id']
+                            except:
+                                pass
+
+                from app.verification.missing_citation_checker import MissingCitationChecker
+                missing_checker = MissingCitationChecker()
+                missing_issues = missing_checker.check_missing_citations(
+                    result.get('citations', []),
+                    source_contents,
+                    bibliography_matches
+                )
+
+                # 3. Цитаты без ссылок
+                source_list = []
+                for source_id, content in source_contents.items():
+                    source_list.append({
+                        'id': source_id,
+                        'title': analysis_service._get_source_title(source_id),
+                        'full_content': content
+                    })
+
+                # Получаем текст документа
+                document = documents_store.get(doc_id)
+                doc_text = ''
+                if document:
+                    try:
+                        with open(document.file_path, 'r', encoding='utf-8') as f:
+                            doc_text = f.read()
+                    except:
+                        parsed = analysis_service.document_parser.parse_document(document.file_path)
+                        doc_text = parsed.raw_text if hasattr(parsed, 'raw_text') else ''
+
+                from app.verification.unreferenced_citation_checker import UnreferencedCitationChecker
+                unreferenced_checker = UnreferencedCitationChecker()
+                unreferenced_issues = unreferenced_checker.find_unreferenced_citations(
+                    doc_text,
+                    source_list,
+                    result.get('citations', [])
+                )
+
+                # Обновляем результат
+                all_issues = misref_issues + missing_issues + unreferenced_issues
+                result['issues'] = all_issues
+                result['issues_by_category'] = {
+                    'misreference': misref_issues,
+                    'missing_citation': missing_issues,
+                    'unreferenced': unreferenced_issues
+                }
+                result['issues_found'] = len(all_issues)
+
+                # Сохраняем обновленный результат
+                analysis_service.analysis_results[doc_id] = result
+
+            # Запускаем проверки (в синхронном режиме для простоты)
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(run_all_checks())
+
+        return {
+            "success": True,
+            "analysis": result
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting full analysis: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/library/sources/{source_id}/check-citation/{citation_num}")
+async def check_single_citation_in_source(source_id: str, citation_num: int, doc_id: str):
+    """
+    Проверяет конкретную цитату из документа в источнике
+    """
+    try:
+        # Получаем результат анализа
+        result = analysis_service.get_analysis_result(doc_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Analysis not found")
+
+        # Находим цитату по номеру
+        citation = None
+        for c in result.get('citations', []):
+            if c.get('citation_number') == citation_num:
+                citation = c
+                break
+
+        if not citation:
+            raise HTTPException(status_code=404, detail=f"Citation [{citation_num}] not found")
+
+        # Получаем контент источника
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        source_content = loop.run_until_complete(
+            analysis_service._get_source_content("demo_user", source_id)
+        )
+
+        if not source_content:
+            raise HTTPException(status_code=404, detail="Source content not found")
+
+        # Проверяем наличие цитаты
+        from app.verification.missing_citation_checker import MissingCitationChecker
+        checker = MissingCitationChecker()
+
+        citation_text = citation.get('full_paragraph', '') or citation.get('text', '')
+        context = citation.get('context', '')
+        full_citation = f"{citation_text} {context}".strip()
+
+        found, confidence, details = checker._find_citation_in_source(
+            full_citation, source_content
+        )
+
+        return {
+            "success": True,
+            "citation_number": citation_num,
+            "citation_text": citation_text[:200] + '...' if len(citation_text) > 200 else citation_text,
+            "found_in_source": found,
+            "confidence": confidence * 100,
+            "details": details,
+            "source_id": source_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking citation in source: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 async def broadcast_library_update(event_type: str, data: dict):
     """Отправляет обновление всем подключенным клиентам"""

@@ -13,6 +13,10 @@ from app.citation_parser.citation_extractor import CitationExtractor
 from app.bibliography.checker import BibliographyChecker
 from app.bibliography.semantic_matcher import semantic_matcher
 from app.services.library_service import library_service
+from app.bibliography.misreference_checker import MisreferenceChecker
+from app.verification.missing_citation_checker import MissingCitationChecker
+from app.verification.unreferenced_citation_checker import UnreferencedCitationChecker
+
 import logging
 import requests
 import json
@@ -25,6 +29,12 @@ class SimpleAnalysisService:
         self.analysis_status: Dict[str, Dict[str, Any]] = {}
         self.semantic_matcher = semantic_matcher
         self.logger = logging.getLogger(__name__)
+        self.misreference_checker = MisreferenceChecker()
+        self.missing_citation_checker = MissingCitationChecker()
+        self.unreferenced_checker = UnreferencedCitationChecker()
+
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
 
     def update_status(self, doc_id: str, stage: str, progress: int = 0):
         """Обновляет статус анализа"""
@@ -45,11 +55,56 @@ class SimpleAnalysisService:
         """Получает статус анализа"""
         return self.analysis_status.get(doc_id)
 
+    def _run_async(self, coro):
+        """Запускает асинхронную корутину в синхронном контексте"""
+        try:
+            # Пытаемся получить текущий event loop
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # Если нет текущего loop, используем наш
+            loop = self.loop
+
+        if loop.is_running():
+            # Если loop уже запущен, создаем новую задачу
+            return asyncio.run_coroutine_threadsafe(coro, loop)
+        else:
+            # Если loop не запущен, запускаем и ждем
+            return loop.run_until_complete(coro)
+
+    async def _get_all_source_contents_async(self, user_id: str) -> Dict[str, str]:
+        """
+        Асинхронно получает все тексты источников пользователя
+        """
+        source_contents = {}
+
+        if not hasattr(library_service, 'sources'):
+            return source_contents
+
+        user_sources = library_service.sources.get(user_id, [])
+
+        for source in user_sources:
+            source_id = source.get('id')
+            if not source_id:
+                continue
+
+            # Пытаемся получить полный текст
+            content_result = await library_service.get_source_content(user_id, source_id)
+
+            if content_result.get('success') and content_result.get('content'):
+                source_contents[source_id] = content_result['content']
+            else:
+                # Если нет полного текста, используем превью
+                preview = source.get('content_preview', '')
+                if preview and len(preview) > 100:
+                    source_contents[source_id] = preview
+
+        return source_contents
+
     def analyze_document(self, file_path: str, doc_id: str) -> Dict[str, Any]:
         try:
-            print(f"🚀 НАЧИНАЕМ АНАЛИЗ ДОКУМЕНТА {doc_id}")
-            print(f"📁 Файл: {file_path}")
-            print(f"📊 Существует ли файл: {os.path.exists(file_path)}")
+            print(f"НАЧИНАЕМ АНАЛИЗ ДОКУМЕНТА {doc_id}")
+            print(f"Файл: {file_path}")
+            print(f"Существует ли файл: {os.path.exists(file_path)}")
 
             import time
             start_time = time.time()
@@ -68,13 +123,13 @@ class SimpleAnalysisService:
             self.analysis_results[doc_id] = temp_result
 
             # 1. Парсинг документа
-            print("🔍 Шаг 1: Парсим документ...")
+            print(" Шаг 1: Парсим документ...")
             try:
                 document = self.document_parser.parse_document(file_path)
-                print(f"✅ Документ распарсен: {len(document.main_content or [])} блоков")
+                print(f" Документ распарсен: {len(document.main_content or [])} блоков")
 
                 if not document.main_content:
-                    print("⚠️ ВНИМАНИЕ: main_content пуст!")
+                    print(" ВНИМАНИЕ: main_content пуст!")
                     result = {
                         'doc_id': doc_id,
                         'status': 'completed',
@@ -104,7 +159,7 @@ class SimpleAnalysisService:
                     return result
 
             except Exception as e:
-                print(f"❌ Ошибка парсинга: {e}")
+                print(f" Ошибка парсинга: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -124,15 +179,15 @@ class SimpleAnalysisService:
                 return result
 
             # 2. Извлечение цитат
-            print("🔍 Шаг 2: Извлекаем цитирования...")
+            print(" Шаг 2: Извлекаем цитирования...")
             try:
                 citations_result = self.citation_extractor.extract_citations(
                     document.main_content or []
                 )
-                print(f"✅ Найдено цитат: {citations_result.get('total_unique', 0)}")
-                print(f"📝 Примеры цитат: {citations_result.get('citations', [])[:5]}")
+                print(f" Найдено цитат: {citations_result.get('total_unique', 0)}")
+                print(f" Примеры цитат: {citations_result.get('citations', [])[:5]}")
             except Exception as e:
-                print(f"❌ Ошибка извлечения цитат: {e}")
+                print(f" Ошибка извлечения цитат: {e}")
                 citations_result = {
                     'total_unique': 0,
                     'citations': [],
@@ -140,43 +195,44 @@ class SimpleAnalysisService:
                 }
 
             # 3. Поиск библиографии
-            print("🔍 Шаг 3: Ищем раздел библиографии...")
+            print(" Шаг 3: Ищем раздел библиографии...")
             try:
                 bibliography_blocks = self.bibliography_checker.find_bibliography_section(
                     document.main_content or []
                 )
-                print(f"✅ Найдено библиографических записей: {len(bibliography_blocks)}")
+                print(f" Найдено библиографических записей: {len(bibliography_blocks)}")
             except Exception as e:
-                print(f"❌ Ошибка поиска библиографии: {e}")
+                print(f" Ошибка поиска библиографии: {e}")
                 bibliography_blocks = []
 
             # 4. Создаем библиографические записи как простые словари
-            print("🔍 Шаг 4: Создаем библиографические записи...")
+            print(" Шаг 4: Создаем библиографические записи...")
             bibliography_entries = self._create_bibliography_entries(bibliography_blocks)
 
-            print("🔍 Шаг 5: Поиск в локальной библиотеке...")
+            # 5. Поиск в локальной библиотеке
+            print(" Шаг 5: Поиск в локальной библиотеке...")
             try:
                 enhanced_entries = []
 
                 for entry in bibliography_entries:
                     # Создаем объект записи
+                    from app.models.data_models import BibliographyEntry
                     bib_entry = BibliographyEntry(**entry)
 
-                    # ВАЖНО: Вызываем поиск в библиотеке!
-                    print(f"\n  🔎 Ищем в библиотеке для: {entry['text'][:100]}...")
+                    print(f"\n   Ищем в библиотеке для: {entry['text'][:100]}...")
 
                     library_match = self.bibliography_checker._search_in_library(
                         entry['text'],
-                        [entry['text']]  # поисковый запрос
+                        [entry['text']]
                     )
 
                     if library_match:
-                        print(f"  ✅ Найдено совпадение!")
+                        print(f"   Найдено совпадение!")
                         bib_entry.library_match = library_match
                         bib_entry.is_verified = True
                         bib_entry.enhancement_confidence = library_match.get('match_score', 0) / 100
                     else:
-                        print(f"  ❌ Совпадений не найдено")
+                        print(f"   Совпадений не найдено")
 
                     enhanced_entries.append(bib_entry)
 
@@ -198,19 +254,19 @@ class SimpleAnalysisService:
                     bibliography_entries.append(entry_dict)
 
                 matched_count = sum(1 for e in bibliography_entries if e.get('library_match'))
-                print(f"\n✅ Поиск завершен. Найдено совпадений: {matched_count} из {len(bibliography_entries)}")
+                print(f"\n Поиск завершен. Найдено совпадений: {matched_count} из {len(bibliography_entries)}")
 
             except Exception as e:
-                print(f"⚠️ Ошибка при поиске в библиотеке: {e}")
+                print(f" Ошибка при поиске в библиотеке: {e}")
                 import traceback
                 traceback.print_exc()
 
             # 6. Проверка соответствия
-            print("🔍 Шаг 6: Проверяем соответствие цитат и библиографии...")
+            print(" Шаг 6: Проверяем соответствие цитат и библиографии...")
             try:
                 if bibliography_blocks:
                     validation_result = self.bibliography_checker.check_citations_vs_bibliography(
-                        citations_result['citations'],
+                        [c for c in citations_result['citations'] if c.isdigit()],  # Только цифровые
                         bibliography_blocks
                     )
 
@@ -221,13 +277,13 @@ class SimpleAnalysisService:
                 else:
                     validation_result = {
                         'valid_references': [],
-                        'missing_references': citations_result['citations'],
+                        'missing_references': [c for c in citations_result['citations'] if c.isdigit()],
                         'valid_count': 0,
-                        'missing_count': len(citations_result['citations']),
+                        'missing_count': len([c for c in citations_result['citations'] if c.isdigit()]),
                         'bibliography_found': False
                     }
             except Exception as e:
-                print(f"❌ Ошибка проверки соответствия: {e}")
+                print(f" Ошибка проверки соответствия: {e}")
                 validation_result = {
                     'valid_references': [],
                     'missing_references': [],
@@ -236,23 +292,143 @@ class SimpleAnalysisService:
                     'bibliography_found': False
                 }
 
-            # 7. Формируем результат
-            print("🔍 Шаг 7: Формируем результат...")
+            # 7. Собираем все источники с контентом
+            print(" Шаг 7: Собираем контент источников для дополнительных проверок...")
             try:
-                analysis_result = self._format_simple_result(
-                    doc_id, document, citations_result, validation_result, bibliography_entries
+                # ИСПРАВЛЕНИЕ: Используем run_until_complete с нашим loop
+                source_contents = self.loop.run_until_complete(
+                    self._get_all_source_contents_async("demo_user")
+                )
+                print(f"   Получено источников с контентом: {len(source_contents)}")
+            except Exception as e:
+                print(f"   Ошибка при получении контента источников: {e}")
+                source_contents = {}
+
+            # Создаем словарь соответствия номеров цитат и ID источников
+            bibliography_matches = {}
+            for entry in bibliography_entries:
+                if entry.get('library_match'):
+                    citation_nums = entry.get('matched_citations', [])
+                    for num in citation_nums:
+                        try:
+                            bibliography_matches[int(num)] = entry['library_match']['id']
+                        except:
+                            pass
+
+            print(f"   Найдено соответствий библиографии с источниками: {len(bibliography_matches)}")
+
+            # 8. Проверка на некорректные ссылки
+            print(" Шаг 8: Проверка некорректных ссылок...")
+            misreference_issues = []
+            try:
+                misreference_issues = self.misreference_checker.check_misreferences(
+                    citations_result.get('details', []),
+                    bibliography_entries,
+                    source_contents
+                )
+                print(f"   Найдено некорректных ссылок: {len(misreference_issues)}")
+            except Exception as e:
+                print(f"   Ошибка при проверке некорректных ссылок: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # 9. Проверка отсутствующих в источнике цитат
+            print(" Шаг 9: Проверка отсутствующих в источнике цитат...")
+            missing_citation_issues = []
+            try:
+                missing_citation_issues = self.missing_citation_checker.check_missing_citations(
+                    citations_result.get('details', []),
+                    source_contents,
+                    bibliography_matches
+                )
+                print(f"   Найдено отсутствующих цитат: {len(missing_citation_issues)}")
+            except Exception as e:
+                print(f"   Ошибка при проверке отсутствующих цитат: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # 10. Поиск цитат без ссылок
+            print(" Шаг 10: Поиск цитат без ссылок...")
+            unreferenced_issues = []
+            try:
+                # Преобразуем источники в нужный формат
+                source_list = []
+                for source_id, content in source_contents.items():
+                    source_list.append({
+                        'id': source_id,
+                        'title': self._get_source_title(source_id),
+                        'full_content': content
+                    })
+
+                # Получаем текст документа
+                doc_text = document.raw_text if hasattr(document, 'raw_text') else ''
+
+                unreferenced_issues = self.unreferenced_checker.find_unreferenced_citations(
+                    doc_text,
+                    source_list,
+                    citations_result.get('details', [])
+                )
+                print(f"   Найдено цитат без ссылок: {len(unreferenced_issues)}")
+            except Exception as e:
+                print(f"   Ошибка при поиске цитат без ссылок: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # 11. Объединяем все проблемы
+            all_issues = []
+
+            # Проблемы из validation_result
+            for missing_ref in validation_result.get('missing_references', []):
+                all_issues.append({
+                    'type': 'missing',
+                    'description': f"Ссылка '[{missing_ref}]' отсутствует в библиографии",
+                    'severity': "high",
+                    'suggestion': "Добавьте запись в раздел библиографии"
+                })
+
+            # Неиспользуемые библиографические записи
+            unused_entries = [entry for entry in bibliography_entries if not entry.get('is_valid', False)]
+            for entry in unused_entries:
+                all_issues.append({
+                    'type': 'unused',
+                    'description': f"Библиографическая запись не связана с цитатами: {entry.get('text', '')[:100]}...",
+                    'severity': "medium",
+                    'suggestion': "Удалите запись или добавьте соответствующую цитату в текст"
+                })
+
+            # Добавляем новые проблемы
+            all_issues.extend(misreference_issues)
+            all_issues.extend(missing_citation_issues)
+            all_issues.extend(unreferenced_issues)
+
+            # 12. Формируем результат
+            print(" Шаг 11: Формируем результат...")
+            try:
+                analysis_result = self._format_enhanced_result(
+                    doc_id,
+                    document,
+                    citations_result,
+                    validation_result,
+                    bibliography_entries,
+                    all_issues,
+                    {
+                        'misreference': misreference_issues,
+                        'missing_citation': missing_citation_issues,
+                        'unreferenced': unreferenced_issues
+                    }
                 )
 
                 end_time = time.time()
-                print(f"✅ Анализ завершен за {end_time - start_time:.2f} секунд")
-                print(
-                    f"📊 Результат: {len(analysis_result.get('citations', []))} цитат, {len(analysis_result.get('bibliography_entries', []))} источников")
+                print(f"Анализ завершен за {end_time - start_time:.2f} секунд")
+                print(f"Результат: {len(analysis_result.get('citations', []))} цитат, "
+                      f"{len(analysis_result.get('bibliography_entries', []))} источников, "
+                      f"{len(all_issues)} проблем")
 
                 self.analysis_results[doc_id] = analysis_result
                 return analysis_result
 
             except Exception as e:
-                print(f"❌ Ошибка форматирования результата: {e}")
+                print(f" Ошибка форматирования результата: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -272,7 +448,7 @@ class SimpleAnalysisService:
                 return result
 
         except Exception as e:
-            print(f"❌ КРИТИЧЕСКАЯ ОШИБКА В analyze_document: {e}")
+            print(f" КРИТИЧЕСКАЯ ОШИБКА В analyze_document: {e}")
             import traceback
             traceback.print_exc()
 
@@ -347,6 +523,17 @@ class SimpleAnalysisService:
                 'reason': f'Ошибка анализа: {str(e)}'
             }
 
+    async def _get_source_content(self, user_id: str, source_id: str) -> Optional[str]:
+        """Получает контент источника"""
+        try:
+            content_result = await library_service.get_source_content(user_id, source_id)
+            if content_result.get('success') and content_result.get('content'):
+                return content_result['content']
+            return None
+        except Exception as e:
+            logger.error(f"Error getting source content: {e}")
+            return None
+
     def _ensure_serializable(self, data: Any) -> Any:
         """Обеспечивает сериализуемость данных"""
         if data is None:
@@ -381,8 +568,7 @@ class SimpleAnalysisService:
             entries.append(entry)
         return entries
 
-    def _update_bibliography_with_matches(self, bibliography_entries: List[Dict], validation_result: Dict) -> List[
-        Dict]:
+    def _update_bibliography_with_matches(self, bibliography_entries: List[Dict], validation_result: Dict) -> List[Dict]:
         valid_refs = set(validation_result.get('valid_references', []))
 
         print(f"ПРОВЕРКА СООТВЕТСТВИЯ БИБЛИОГРАФИИ И ЦИТАТ")
@@ -429,7 +615,7 @@ class SimpleAnalysisService:
         """Форматирует результат как простой словарь"""
 
         print(f"\n{'=' * 80}")
-        print("🔍 ФОРМИРОВАНИЕ ЦИТАТ ДЛЯ ФРОНТЕНДА:")
+        print(" ФОРМИРОВАНИЕ ЦИТАТ ДЛЯ ФРОНТЕНДА:")
 
         # Получаем details
         details_data = citations_result.get('details', [])
@@ -524,63 +710,32 @@ class SimpleAnalysisService:
 
                 print(f"   Цитата [{citation_num}]: '{citation_text[:80]}...'")
 
-        print(f"✅ Сформировано {len(citations)} валидных цитат")
-
-        # ====== Формируем проблемы ======
-        issues = []
-
-        # Пропущенные ссылки (только цифровые)
-        valid_missing_refs = []
-        for missing_ref in validation_result.get('missing_references', []):
-            if isinstance(missing_ref, str) and missing_ref.isdigit():
-                valid_missing_refs.append(missing_ref)
-            else:
-                print(f"   Игнорируем не-цифровую пропущенную ссылку: '{missing_ref}'")
-
-        for missing_ref in valid_missing_refs:
-            issue = {
-                'type': 'missing',
-                'description': f"Ссылка '[{missing_ref}]' отсутствует в библиографии",
-                'severity': "high",
-                'suggestion': "Добавьте запись в раздел библиографии"
-            }
-            issues.append(issue)
-
-        # Неиспользуемые библиографические записи
-        unused_entries = [entry for entry in bibliography_entries if not entry.get('is_valid', False)]
-        for entry in unused_entries:
-            issue = {
-                'type': 'unused',
-                'description': f"Библиографическая запись не связана с цитатами: {entry.get('text', '')[:100]}...",
-                'severity': "medium",
-                'suggestion': "Удалите запись или добавьте соответствующую цитату в текст"
-            }
-            issues.append(issue)
+        print(f" Сформировано {len(citations)} валидных цитат")
 
         # ====== Вычисляем статистику ======
-        total_citations = len(citations)  # Используем отфильтрованный список
+        total_citations = len(citations)
         valid_count = len(validation_result.get('valid_references', []))
 
         completeness_score = valid_count / max(1, total_citations) if total_citations > 0 else 0.0
 
         summary = {
             "total_references": total_citations,
-            "missing_references": len(valid_missing_refs),
-            "unused_references": len(unused_entries),
+            "missing_references": len(validation_result.get('missing_references', [])),
+            "unused_references": len([e for e in bibliography_entries if not e.get('is_valid', False)]),
             "duplicate_references": 0,
             "bibliography_entries": len(bibliography_entries),
             "valid_bibliography_entries": len([e for e in bibliography_entries if e.get('is_valid', False)]),
-            "completeness_score": round(completeness_score * 100, 2)  # В процентах
+            "completeness_score": round(completeness_score * 100, 2)
         }
 
         result = {
             'doc_id': doc_id,
             'status': 'completed',
             'citations_found': len(citations),
-            'issues_found': len(issues),
+            'issues_found': 0,  # Будет обновлено в _format_enhanced_result
             'bibliography_entries_found': len(bibliography_entries),
             'citations': citations,
-            'issues': issues,
+            'issues': [],  # Будет обновлено в _format_enhanced_result
             'bibliography_entries': bibliography_entries,
             'summary': summary,
             'error_message': None
@@ -605,7 +760,7 @@ class SimpleAnalysisService:
                 result = await asyncio.wait_for(task, timeout=timeout_seconds)
                 return result
             except asyncio.TimeoutError:
-                print(f"❌ Семантическая проверка превысила таймаут {timeout_seconds} секунд")
+                print(f" Семантическая проверка превысила таймаут {timeout_seconds} секунд")
                 task.cancel()  # Отменяем задачу
                 return {
                     'success': False,
@@ -614,7 +769,7 @@ class SimpleAnalysisService:
                 }
 
         except Exception as e:
-            print(f"❌ Ошибка при семантической проверке: {e}")
+            print(f" Ошибка при семантической проверке: {e}")
             import traceback
             traceback.print_exc()
             return {
@@ -625,7 +780,7 @@ class SimpleAnalysisService:
 
     async def _perform_semantic_check_internal(self, doc_id: str) -> Dict[str, Any]:
         """Внутренняя логика семантической проверки"""
-        print(f"\n🔍 НАЧИНАЕМ СЕМАНТИЧЕСКУЮ ПРОВЕРКУ ДЛЯ ДОКУМЕНТА {doc_id}")
+        print(f"\n НАЧИНАЕМ СЕМАНТИЧЕСКУЮ ПРОВЕРКУ ДЛЯ ДОКУМЕНТА {doc_id}")
 
         # Получаем существующий результат анализа
         analysis_result = self.analysis_results.get(doc_id)
@@ -639,8 +794,8 @@ class SimpleAnalysisService:
         if not hasattr(self, 'library_service') or self.library_service is None:
             return {'success': False, 'error': 'Library service not available'}
 
-        user_sources = getattr(self.library_service, 'sources', {}).get(user_id, [])
-        print(f"📚 Проверяем {len(analysis_result['citations'])} цитат против {len(user_sources)} источников")
+        user_sources = getattr(library_service, 'sources', {}).get(user_id, [])
+        print(f" Проверяем {len(analysis_result['citations'])} цитат против {len(user_sources)} источников")
 
         if not user_sources:
             return {
@@ -659,7 +814,7 @@ class SimpleAnalysisService:
             citation_verifications = []
             processed_count += 1
 
-            print(f"🔍 Проверка цитаты {processed_count}/{len(analysis_result['citations'])}")
+            print(f" Проверка цитаты {processed_count}/{len(analysis_result['citations'])}")
 
             # Проверяем в каждом источнике
             for source in user_sources:
@@ -672,7 +827,7 @@ class SimpleAnalysisService:
                             citation_verifications.append(verification_result)
                             break
                     except Exception as e:
-                        print(f"⚠️ Ошибка при проверке источника {source.get('id')}: {e}")
+                        print(f"Ошибка при проверке источника {source.get('id')}: {e}")
                         continue
 
             # Добавляем информацию о верификации к цитате
@@ -697,7 +852,7 @@ class SimpleAnalysisService:
         analysis_result['semantic_check_pending'] = False
 
         print(
-            f"✅ Семантическая проверка завершена: {len(verified_citations)} из {len(enhanced_citations)} цитат верифицированы"
+            f" Семантическая проверка завершена: {len(verified_citations)} из {len(enhanced_citations)} цитат верифицированы"
         )
 
         return {
@@ -706,3 +861,75 @@ class SimpleAnalysisService:
             'verified_citations': len(verified_citations),
             'total_citations': len(enhanced_citations)
         }
+
+    async def _get_all_source_contents(self, user_id: str) -> Dict[str, str]:
+        """
+        Получает все тексты источников пользователя
+        """
+        source_contents = {}
+
+        if not hasattr(library_service, 'sources'):
+            return source_contents
+
+        user_sources = library_service.sources.get(user_id, [])
+
+        for source in user_sources:
+            source_id = source.get('id')
+            if not source_id:
+                continue
+
+            # Пытаемся получить полный текст
+            content_result = await library_service.get_source_content(user_id, source_id)
+
+            if content_result.get('success') and content_result.get('content'):
+                source_contents[source_id] = content_result['content']
+            else:
+                # Если нет полного текста, используем превью
+                preview = source.get('content_preview', '')
+                if preview and len(preview) > 100:
+                    source_contents[source_id] = preview
+
+        return source_contents
+
+    def _get_source_title(self, source_id: str) -> str:
+        """Получает название источника по ID"""
+        try:
+            for user_sources in library_service.sources.values():
+                for source in user_sources:
+                    if source.get('id') == source_id:
+                        return source.get('title', 'Unknown')
+        except:
+            pass
+        return f"Source {source_id}"
+
+    def _format_enhanced_result(
+            self,
+            doc_id: str,
+            document: ParsedDocument,
+            citations_result: Dict,
+            validation_result: Dict,
+            bibliography_entries: List[Dict],
+            all_issues: List[Dict],
+            issue_categories: Dict[str, List]
+    ) -> Dict[str, Any]:
+        """
+        Форматирует улучшенный результат с категоризацией проблем
+        """
+        # Используем существующий метод форматирования
+        base_result = self._format_simple_result(
+            doc_id, document, citations_result, validation_result, bibliography_entries
+        )
+
+        # Добавляем категоризированные проблемы
+        base_result['issues_by_category'] = issue_categories
+        base_result['issues'] = all_issues
+        base_result['issues_found'] = len(all_issues)
+
+        # Добавляем статистику по новым типам проблем
+        base_result['summary'].update({
+            'misreference_issues': len(issue_categories.get('misreference', [])),
+            'missing_citation_issues': len(issue_categories.get('missing_citation', [])),
+            'unreferenced_issues': len(issue_categories.get('unreferenced', []))
+        })
+
+        return base_result

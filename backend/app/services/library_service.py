@@ -605,6 +605,58 @@ class LibraryService:
                 "message": f"Ошибка при получении содержания: {str(e)}"
             }
 
+    async def get_source_content_async(self, user_id: str, source_id: str) -> Optional[str]:
+        """
+        Асинхронно получает контент источника
+        """
+        try:
+            # Проверяем кэш
+            if source_id in self.content_cache:
+                return self.content_cache[source_id]
+
+            # Загружаем из файла
+            content = self._load_source_content(source_id)
+            if content:
+                self.content_cache[source_id] = content
+                return content
+
+            # Если файла нет, пробуем извлечь из оригинального
+            source = await self.get_source_details_async(user_id, source_id)
+            if source and source.get("source", {}).get("file_path"):
+                from app.services.simple_source_processor import SimpleSourceProcessor
+                processor = SimpleSourceProcessor()
+                content = await processor.extract_text_from_file(source["source"]["file_path"])
+                if content:
+                    self._save_source_content(source_id, content)
+                    self.content_cache[source_id] = content
+                    return content
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error getting source content async: {e}")
+            return None
+
+    async def get_source_details_async(self, user_id: str, source_id: str) -> Optional[Dict]:
+        """
+        Асинхронно получает детали источника
+        """
+        try:
+            user_sources = self.sources.get(user_id, [])
+            source = next((s for s in user_sources if s['id'] == source_id), None)
+
+            if not source:
+                return None
+
+            return {
+                "success": True,
+                "source": source
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting source details async: {e}")
+            return None
+
     async def verify_citation_content(self, user_id: str, citation_text: str, source_id: str) -> Dict[str, Any]:
         """Проверяет соответствие цитаты содержанию источника"""
         try:
